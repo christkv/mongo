@@ -60,9 +60,9 @@ namespace mongo {
         : _defaultWriteConcern(wc), _client( client ), _opCounters( opCounters ), _le( le ) {
     }
 
-    static void maybeBuildWCError( const Status& wcStatus,
-                                   const WriteConcernResult& wcResult,
-                                   BatchedCommandResponse* response ) {
+    static void buildWCError( const Status& wcStatus,
+                              const WriteConcernResult& wcResult,
+                              WCErrorDetail* wcError ) {
 
         // Error reported is either the errmsg or err from wc
         string errMsg;
@@ -75,14 +75,14 @@ namespace mongo {
             return;
 
         if ( wcStatus.isOK() )
-            response->setErrCode( ErrorCodes::WriteConcernFailed );
+            wcError->setErrCode( ErrorCodes::WriteConcernFailed );
         else
-            response->setErrCode( wcStatus.code() );
+            wcError->setErrCode( wcStatus.code() );
 
         if ( wcResult.wTimedOut )
-            response->setErrInfo( BSON( "wtimeout" << true ) );
+            wcError->setErrInfo( BSON( "wtimeout" << true ) );
 
-        response->setErrMessage( errMsg );
+        wcError->setErrMessage( errMsg );
     }
 
     void WriteBatchExecutor::executeBatch( const BatchedCommandRequest& request,
@@ -109,16 +109,11 @@ namespace mongo {
 
                 // In case updates turned out to be upserts, the callers may be interested
                 // in learning what _id was used for that document.
-                if ( !upsertedID.isEmpty() ) {
-                    if ( numBatchItems == 1 ) {
-                        response->setSingleUpserted(upsertedID);
-                    }
-                    else if ( verbose ) {
-                        std::auto_ptr<BatchedUpsertDetail> upsertDetail(new BatchedUpsertDetail);
-                        upsertDetail->setIndex(i);
-                        upsertDetail->setUpsertedID(upsertedID);
-                        response->addToUpsertDetails(upsertDetail.release());
-                    }
+                if ( !upsertedID.isEmpty() &&  verbose ) {
+                    std::auto_ptr<BatchedUpsertDetail> upsertDetail(new BatchedUpsertDetail);
+                    upsertDetail->setIndex(i);
+                    upsertDetail->setUpsertedID(upsertedID);
+                    response->addToUpsertDetails(upsertDetail.release());
                 }
             }
             else {
@@ -144,34 +139,10 @@ namespace mongo {
             }
         }
 
-        // So far, we may have failed some of the batch's items. So we record
-        // that. Rergardless, we still need to apply the write concern.  If that generates a
-        // more specific error, we'd replace for the intermediate error here. Note that we
-        // "compatct" the error messge if this is an one-item batch. (See rationale later in
-        // this file.)
-        if ( numItemErrors > 0 ) {
-
-            if (numBatchItems > 1) {
-                // TODO
-                // Define the final error code here.
-                // Might be used as a final error, depending on write concern success.
-                response->setErrCode( ErrorCodes::MultipleErrorsOccurred );
-                response->setErrMessage( "batch op errors occurred" );
-            }
-            else {
-                // Promote the single error.
-                const WriteErrorDetail* error = response->getErrDetailsAt( 0 );
-                response->setErrCode( error->getErrCode() );
-                if ( error->isErrInfoSet() ) response->setErrInfo( error->getErrInfo() );
-                response->setErrMessage( error->getErrMessage() );
-                response->unsetErrDetails();
-                error = NULL;
-            }
-        }
-
         // Send opTime in response
-        if ( anyReplEnabled() )
-            response->setLastOp( _client->getLastOp().asDate() );
+        if ( anyReplEnabled() ) {
+            response->setLastOp( _client->getLastOp() );
+        }
 
         // Apply write concern if we had any successful writes
         if ( numItemErrors < numBatchItems ) {
@@ -186,8 +157,10 @@ namespace mongo {
             }
 
             if ( !status.isOK() ) {
-                response->setErrCode( ErrorCodes::WriteConcernFailed );
-                response->setErrMessage( status.toString() );
+                WCErrorDetail wcError;
+                wcError.setErrCode( ErrorCodes::WriteConcernFailed );
+                wcError.setErrMessage( status.toString() );
+                response->setWriteConcernError( wcError );
             }
             else {
 
@@ -195,17 +168,18 @@ namespace mongo {
 
                 WriteConcernResult res;
                 status = waitForWriteConcern( writeConcern, _client->getLastOp(), &res );
-                maybeBuildWCError( status, res, response );
+
+                WCErrorDetail wcError;
+                buildWCError( status, res, &wcError );
+                response->setWriteConcernError( wcError );
             }
         }
 
         // Set the main body of the response. We assume that, if there was an error, the error
         // code would already be set.
-        response->setOk( !response->isErrCodeSet() );
         response->setN( stats.numInserted + stats.numUpserted + stats.numUpdated
                         + stats.numDeleted );
         response->setNDocsModified(stats.numModified);
-        dassert( response->isValid( NULL ) );
 
         // TODO: Audit where we want to queue here - the shardingState calls may block for remote
         // data
@@ -231,6 +205,9 @@ namespace mongo {
                                                        &latestShardVersion );
             }
         }
+
+        response->setOk( true );
+        dassert( response->isValid( NULL ) );
     }
 
     namespace {

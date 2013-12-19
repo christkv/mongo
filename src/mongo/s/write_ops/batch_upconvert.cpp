@@ -163,26 +163,23 @@ namespace mongo {
                                 const BatchedCommandResponse& response,
                                 LastError* error ) {
 
-        scoped_ptr<WriteErrorDetail> topLevelError;
+        scoped_ptr<WriteErrorDetail> commandError;
         WriteErrorDetail* lastBatchError = NULL;
 
         if ( !response.getOk() ) {
+            // Command-level error, all writes failed
 
-            int code = response.getErrCode();
-
-            // Check for batch error
-            // We don't care about write concern errors, these happen in legacy mode in GLE
-            if ( code != ErrorCodes::WriteConcernFailed && !response.isErrDetailsSet() ) {
-                // Top-level error, all writes failed
-                topLevelError.reset( new WriteErrorDetail );
-                buildErrorFromResponse( response, topLevelError.get() );
-                lastBatchError = topLevelError.get();
-            }
-            else if ( response.isErrDetailsSet() ) {
-                // The last error in the batch is always reported - this matches expected COE
-                // semantics for insert batches and works for single writes
-                lastBatchError = response.getErrDetails().back();
-            }
+            commandError.reset( new WriteErrorDetail );
+            buildErrorFromResponse( response, commandError.get() );
+            lastBatchError = commandError.get();
+        }
+        else if ( response.isErrDetailsSet() ) {
+            // The last error in the batch is always reported - this matches expected COE
+            // semantics for insert batches and works for single writes
+            lastBatchError = response.getErrDetails().back();
+        }
+        else {
+            // We don't care about write concern errors, these happen in legacy mode in GLE.
         }
 
         // Record an error if one exists
@@ -199,8 +196,7 @@ namespace mongo {
         if ( request.getBatchType() == BatchedCommandRequest::BatchType_Update ) {
 
             BSONObj upsertedId;
-            if ( response.isSingleUpsertedSet() ) upsertedId = response.getSingleUpserted();
-            else if( response.isUpsertDetailsSet() ) {
+            if( response.isUpsertDetailsSet() ) {
                 // Only report the very last item's upserted id if applicable
                 if ( response.getUpsertDetails().back()->getIndex() + 1
                      == static_cast<int>( request.sizeWriteOps() ) ) {
@@ -209,10 +205,8 @@ namespace mongo {
             }
 
             int numUpserted = 0;
-            if ( response.isSingleUpsertedSet() )
-                ++numUpserted;
-            else if ( response.isUpsertDetailsSet() )
-                numUpserted += response.sizeUpsertDetails();
+            if ( response.isUpsertDetailsSet() )
+                numUpserted = response.sizeUpsertDetails();
 
             int numUpdated = response.getN() - numUpserted;
             dassert( numUpdated >= 0 );

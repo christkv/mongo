@@ -59,7 +59,6 @@ namespace mongo {
         static const BSONField<string> errMessage;
         static const BSONField<long long> n;
         static const BSONField<long long> nDocsModified;
-        static const BSONField<BSONObj> singleUpserted; // ID type
         static const BSONField<std::vector<BatchedUpsertDetail*> > upsertDetails;
         static const BSONField<Date_t> lastOp;
         static const BSONField<std::vector<WriteErrorDetail*> > writeErrors;
@@ -119,11 +118,6 @@ namespace mongo {
         bool isNSet() const;
         long long getN() const;
 
-        void setSingleUpserted(const BSONObj& singleUpserted);
-        void unsetSingleUpserted();
-        bool isSingleUpsertedSet() const;
-        const BSONObj& getSingleUpserted() const;
-
         void setUpsertDetails(const std::vector<BatchedUpsertDetail*>& upsertDetails);
         void addToUpsertDetails(BatchedUpsertDetail* upsertDetails);
         void unsetUpsertDetails();
@@ -132,12 +126,13 @@ namespace mongo {
         const std::vector<BatchedUpsertDetail*>& getUpsertDetails() const;
         const BatchedUpsertDetail* getUpsertDetailsAt(std::size_t pos) const;
 
-        void setLastOp(Date_t lastOp);
+        void setLastOp(OpTime lastOp);
         void unsetLastOp();
         bool isLastOpSet() const;
-        Date_t getLastOp() const;
+        OpTime getLastOp() const;
 
         void setErrDetails(const std::vector<WriteErrorDetail*>& errDetails);
+        // errDetails ownership is transferred to here.
         void addToErrDetails(WriteErrorDetail* errDetails);
         void unsetErrDetails();
         bool isErrDetailsSet() const;
@@ -187,7 +182,7 @@ namespace mongo {
         boost::scoped_ptr<std::vector<BatchedUpsertDetail*> >_upsertDetails;
 
         // (O)  XXX What is lastop?
-        Date_t _lastOp;
+        OpTime _lastOp;
         bool _isLastOpSet;
 
         // (O)  Array of item-level error information
