@@ -41,10 +41,10 @@
 #include "mongo/db/dbhelpers.h"
 #include "mongo/db/dur_commitjob.h"
 #include "mongo/db/index/btree_index_cursor.h"  // for aboutToDeleteBucket
-#include "mongo/db/intervalbtreecursor.h"  // also for aboutToDeleteBucket
 #include "mongo/db/json.h"
 #include "mongo/db/kill_current_op.h"
 #include "mongo/db/pdfile.h"
+#include "mongo/db/repl/is_master.h"
 #include "mongo/db/stats/counters.h"
 #include "mongo/server.h"
 #include "mongo/util/startup_test.h"
@@ -833,7 +833,6 @@ namespace mongo {
     template< class V >
     void BtreeBucket<V>::delBucket(const DiskLoc thisLoc, const IndexDetails& id) {
         BtreeIndexCursor::aboutToDeleteBucket(thisLoc);
-        IntervalBtreeCursor::aboutToDeleteBucket(thisLoc);
         verify( !isHead() );
 
         DiskLoc ll = this->parent;
@@ -966,7 +965,6 @@ namespace mongo {
         }
         BTREE(this->nextChild)->parent.writing() = this->parent;
         BtreeIndexCursor::aboutToDeleteBucket(thisLoc);
-        IntervalBtreeCursor::aboutToDeleteBucket(thisLoc);
         deallocBucket( thisLoc, id );
     }
 
@@ -1253,10 +1251,7 @@ namespace mongo {
         const Ordering ord = Ordering::make(id.keyPattern());
         DiskLoc loc = locate(id, thisLoc, key, ord, pos, found, recordLoc, 1);
         if ( found ) {
-            if ( key.objsize() > this->KeyMax ) {
-                OCCASIONALLY problem() << "unindex: key too large to index but was found for " << id.indexNamespace() << " reIndex suggested" << endl;
-            }            
-            loc.btreemod<V>()->delKeyAtPos(loc, id, pos, ord);            
+            loc.btreemod<V>()->delKeyAtPos(loc, id, pos, ord);
             return true;
         }
         return false;
@@ -1718,9 +1713,14 @@ namespace mongo {
     int BtreeBucket<V>::_insert(const DiskLoc thisLoc, const DiskLoc recordLoc,
                              const Key& key, const Ordering &order, bool dupsAllowed,
                              const DiskLoc lChild, const DiskLoc rChild, IndexDetails& idx) const {
-        if ( key.dataSize() > this->KeyMax ) {
-            problem() << "ERROR: key too large len:" << key.dataSize() << " max:" << this->KeyMax << ' ' << key.dataSize() << ' ' << idx.indexNamespace() << endl;
-            return 2;
+        if ( key.dataSize() > getKeyMax() ) {
+            string msg = str::stream() << "ERROR: key too large len:" << key.dataSize()
+                                       << " max:" << getKeyMax() << ' ' << key.dataSize()
+                                       << ' ' << idx.indexNamespace();
+            problem() << msg << endl;
+            if ( isMaster( NULL ) ) {
+                uasserted( 17281, msg );
+            }
         }
         verify( key.dataSize() > 0 );
 
@@ -1798,11 +1798,16 @@ namespace mongo {
         guessIncreasing = _key.firstElementType() == jstOID && idx.isIdIndex();
         KeyOwned key(_key);
 
-        dassert(toplevel); 
+        dassert(toplevel);
         if ( toplevel ) {
-            if ( key.dataSize() > this->KeyMax ) {
-                problem() << "Btree::insert: key too large to index, skipping " << idx.indexNamespace() << ' ' << key.dataSize() << ' ' << key.toString() << endl;
-                return 3;
+            if ( key.dataSize() > getKeyMax() ) {
+                string msg = str::stream() << "Btree::insert: key too large to index, failing "
+                                           << idx.indexNamespace() << ' ' << key.dataSize() << ' '
+                                           << key.toString();
+                problem() << msg << endl;
+                if ( isMaster( NULL ) ) {
+                    uasserted( 17280, msg );
+                }
             }
         }
 

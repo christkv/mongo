@@ -40,52 +40,69 @@
 namespace mongo {
 
     using mongoutils::str::stream;
+    using std::vector;
 
-    BatchedCommandRequest* msgToBatchRequest( const Message& msg ) {
+    void msgToBatchRequests( const Message& msg, vector<BatchedCommandRequest*>* requests ) {
 
         int opType = msg.operation();
 
         auto_ptr<BatchedCommandRequest> request;
         if ( opType == dbInsert ) {
-            request.reset( msgToBatchInsert( msg ) );
+            msgToBatchInserts( msg, requests );
         }
         else if ( opType == dbUpdate ) {
-            request.reset( msgToBatchUpdate( msg ) );
+            requests->push_back( msgToBatchUpdate( msg ) );
         }
         else {
             dassert( opType == dbDelete );
-            request.reset( msgToBatchDelete( msg ) );
+            requests->push_back( msgToBatchDelete( msg ) );
         }
-
-        return request.release();
     }
 
-    BatchedCommandRequest* msgToBatchInsert( const Message& insertMsg ) {
+    void msgToBatchInserts( const Message& insertMsg,
+                            vector<BatchedCommandRequest*>* insertRequests ) {
 
         // Parsing DbMessage throws
         DbMessage dbMsg( insertMsg );
         NamespaceString nss( dbMsg.getns() );
-        bool coe = dbMsg.reservedField() & Reserved_InsertOption_ContinueOnError;
-
-        vector<BSONObj> docs;
-        do {
-            docs.push_back( dbMsg.nextJsObj() );
-        }
-        while ( dbMsg.moreJSObjs() );
 
         // Continue-on-error == unordered
+        bool coe = dbMsg.reservedField() & Reserved_InsertOption_ContinueOnError;
         bool ordered = !coe;
 
-        // No exceptions from here on
-        BatchedCommandRequest* request =
-            new BatchedCommandRequest( BatchedCommandRequest::BatchType_Insert );
-        request->setNS( nss.ns() );
-        for ( vector<BSONObj>::const_iterator it = docs.begin(); it != docs.end(); ++it ) {
-            request->getInsertRequest()->addToDocuments( *it );
-        }
-        request->setOrdered( ordered );
+        while ( insertRequests->empty() || dbMsg.moreJSObjs() ) {
 
-        return request;
+            // Collect docs for next batch, but don't exceed maximum size
+            int totalInsertSize = 0;
+            vector<BSONObj> docs;
+            do {
+                const char* prevObjMark = dbMsg.markGet();
+                BSONObj nextObj = dbMsg.nextJsObj();
+                if ( totalInsertSize + nextObj.objsize() <= BSONObjMaxUserSize ) {
+                    docs.push_back( nextObj );
+                    totalInsertSize += docs.back().objsize();
+                }
+                else {
+                    // Size limit exceeded, rollback to previous insert position
+                    dbMsg.markReset( prevObjMark );
+                    break;
+                }
+            }
+            while ( dbMsg.moreJSObjs() );
+
+            dassert( !docs.empty() );
+
+            // No exceptions from here on
+            BatchedCommandRequest* request =
+                new BatchedCommandRequest( BatchedCommandRequest::BatchType_Insert );
+            request->setNS( nss.ns() );
+            for ( vector<BSONObj>::const_iterator it = docs.begin(); it != docs.end(); ++it ) {
+                request->getInsertRequest()->addToDocuments( *it );
+            }
+            request->setOrdered( ordered );
+
+            insertRequests->push_back( request );
+        }
     }
 
     BatchedCommandRequest* msgToBatchUpdate( const Message& updateMsg ) {
@@ -136,18 +153,18 @@ namespace mongo {
         return request;
     }
 
-    void buildErrorFromResponse( const BatchedCommandResponse& response, BatchedErrorDetail* error ) {
+    void buildErrorFromResponse( const BatchedCommandResponse& response, WriteErrorDetail* error ) {
         error->setErrCode( response.getErrCode() );
         if ( error->isErrInfoSet() ) error->setErrInfo( response.getErrInfo() );
         error->setErrMessage( response.getErrMessage() );
     }
 
-    void batchErrorToLastError( const BatchedCommandRequest& request,
+    bool batchErrorToLastError( const BatchedCommandRequest& request,
                                 const BatchedCommandResponse& response,
                                 LastError* error ) {
 
-        scoped_ptr<BatchedErrorDetail> topLevelError;
-        BatchedErrorDetail* lastBatchError = NULL;
+        scoped_ptr<WriteErrorDetail> topLevelError;
+        WriteErrorDetail* lastBatchError = NULL;
 
         if ( !response.getOk() ) {
 
@@ -157,7 +174,7 @@ namespace mongo {
             // We don't care about write concern errors, these happen in legacy mode in GLE
             if ( code != ErrorCodes::WriteConcernFailed && !response.isErrDetailsSet() ) {
                 // Top-level error, all writes failed
-                topLevelError.reset( new BatchedErrorDetail );
+                topLevelError.reset( new WriteErrorDetail );
                 buildErrorFromResponse( response, topLevelError.get() );
                 lastBatchError = topLevelError.get();
             }
@@ -170,9 +187,10 @@ namespace mongo {
 
         // Record an error if one exists
         if ( lastBatchError ) {
+            string errMsg = lastBatchError->getErrMessage();
             error->raiseError( lastBatchError->getErrCode(),
-                               lastBatchError->getErrMessage().c_str() );
-            return;
+                               errMsg.empty() ? "see code for details" : errMsg.c_str() );
+            return true;
         }
 
         // Record write stats otherwise
@@ -198,10 +216,18 @@ namespace mongo {
 
             int numUpdated = response.getN() - numUpserted;
             dassert( numUpdated >= 0 );
-            error->recordUpdate( numUpdated > 0, response.getN(), upsertedId );
+
+            // Wrap upserted id in "upserted" field
+            BSONObj leUpsertedId;
+            if ( !upsertedId.isEmpty() )
+                leUpsertedId = upsertedId.firstElement().wrap( kUpsertedFieldName );
+
+            error->recordUpdate( numUpdated > 0, response.getN(), leUpsertedId );
         }
         else if ( request.getBatchType() == BatchedCommandRequest::BatchType_Delete ) {
             error->recordDelete( response.getN() );
         }
+
+        return false;
     }
 }

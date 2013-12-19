@@ -173,7 +173,10 @@ namespace mongo {
                 return false;
             }
 
-            string wStr = w.String();
+            return opReplicatedEnough( op, w.String() );
+        }
+
+        bool opReplicatedEnough( OpTime op , const string& wStr ) {
             if (wStr == "majority") {
                 // use the entire set, including arbiters, to prevent writing
                 // to a majority of the set but not a majority of voters
@@ -237,7 +240,7 @@ namespace mongo {
             return numSlaves <= 0;
         }
 
-        std::vector<BSONObj> getHostsAtOp(OpTime& op) {
+        std::vector<BSONObj> getHostsAtOp(const OpTime& op) {
             std::vector<BSONObj> result;
             if (theReplSet) {
                 result.push_back(theReplSet->myConfig().asBson());
@@ -337,11 +340,15 @@ namespace mongo {
         return slaveTracking.replicatedToNum( op , w );
     }
 
+    bool opReplicatedEnough( OpTime op , const string& w ) {
+        return slaveTracking.opReplicatedEnough( op , w );
+    }
+
     bool waitForReplication( OpTime op , int w , int maxSecondsToWait ) {
         return slaveTracking.waitForReplication( op, w, maxSecondsToWait );
     }
 
-    vector<BSONObj> getHostsWrittenTo(OpTime& op) {
+    vector<BSONObj> getHostsWrittenTo( const OpTime& op ) {
         return slaveTracking.getHostsAtOp(op);
     }
 

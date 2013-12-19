@@ -33,6 +33,7 @@
 #include "mongo/db/d_concurrency.h"
 #include "mongo/db/namespace_details.h"
 #include "mongo/db/namespace_details-inl.h"
+#include "mongo/db/query/plan_cache.h"
 #include "mongo/db/structure/collection.h"
 #include "mongo/util/debug_util.h"
 
@@ -44,13 +45,13 @@ namespace mongo {
     CollectionInfoCache::CollectionInfoCache( Collection* collection )
         : _collection( collection ),
           _keysComputed( false ),
-          _qcCacheMutex( "_qcCacheMutex" ),
-          _qcWriteCount( 0 ) {}
+          _planCache(new PlanCache()) { }
 
     void CollectionInfoCache::reset() {
         Lock::assertWriteLocked( _collection->ns().ns() );
         clearQueryCache();
         _keysComputed = false;
+        _planCache->clear();
     }
 
     void CollectionInfoCache::computeIndexKeys() {
@@ -73,33 +74,15 @@ namespace mongo {
     }
 
     void CollectionInfoCache::notifyOfWriteOp() {
-        scoped_lock lk( _qcCacheMutex );
-        if ( _qcCache.empty() )
-            return;
-        if ( ++_qcWriteCount >= 100 )
-            _clearQueryCache_inlock();
+        // TODO: hook up w/new cache when impl
     }
 
     void CollectionInfoCache::clearQueryCache() {
-        scoped_lock lk( _qcCacheMutex );
-        _clearQueryCache_inlock();
+        // TODO: hook up w/new cache when impl
     }
 
-    void CollectionInfoCache::_clearQueryCache_inlock() {
-        _qcCache.clear();
-        _qcWriteCount = 0;
-    }
-
-    CachedQueryPlan CollectionInfoCache::cachedQueryPlanForPattern( const QueryPattern &pattern ) {
-        scoped_lock lk( _qcCacheMutex );
-        return _qcCache[ pattern ];
-    }
-
-
-    void CollectionInfoCache::registerCachedQueryPlanForPattern( const QueryPattern &pattern,
-                                                                 const CachedQueryPlan &cachedQueryPlan ) {
-        scoped_lock lk( _qcCacheMutex );
-        _qcCache[ pattern ] = cachedQueryPlan;
+    PlanCache* CollectionInfoCache::getPlanCache() const {
+        return _planCache.get();
     }
 
 }

@@ -38,7 +38,7 @@
 #include "mongo/s/ns_targeter.h"
 #include "mongo/s/write_ops/batched_command_request.h"
 #include "mongo/s/write_ops/batched_command_response.h"
-#include "mongo/s/write_ops/batched_error_detail.h"
+#include "mongo/s/write_ops/write_error_detail.h"
 #include "mongo/s/write_ops/write_op.h"
 
 namespace mongo {
@@ -46,7 +46,7 @@ namespace mongo {
     class TargetedWriteBatch;
     struct ShardError;
     class TrackedErrors;
-    class BatchWriteStats;
+    struct BatchWriteStats;
 
     /**
      * The BatchWriteOp class manages the lifecycle of a batched write received by mongos.  Each
@@ -130,7 +130,7 @@ namespace mongo {
          * BatchWriteOp, and so a response is not available.
          */
         void noteBatchError( const TargetedWriteBatch& targetedBatch,
-                             const BatchedErrorDetail& error );
+                             const WriteErrorDetail& error );
 
         /**
          * Returns false if the batch write op needs more processing.
@@ -171,6 +171,7 @@ namespace mongo {
         int numInserted;
         int numUpserted;
         int numUpdated;
+        int numModified;
         int numDeleted;
 
     };
@@ -222,13 +223,13 @@ namespace mongo {
      */
     struct ShardError {
 
-        ShardError( const ShardEndpoint& endpoint, const BatchedErrorDetail& error ) :
+        ShardError( const ShardEndpoint& endpoint, const WriteErrorDetail& error ) :
             endpoint( endpoint ) {
             error.cloneTo( &this->error );
         }
 
         const ShardEndpoint endpoint;
-        BatchedErrorDetail error;
+        WriteErrorDetail error;
     };
 
     /**

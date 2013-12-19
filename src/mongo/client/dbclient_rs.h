@@ -517,6 +517,19 @@ namespace mongo {
         virtual bool call( Message &toSend, Message &response, bool assertOk=true , string * actualServer = 0 );
         virtual bool callRead( Message& toSend , Message& response ) { return checkMaster()->callRead( toSend , response ); }
 
+        /**
+         * Returns whether a query or command can be sent to secondaries based on the query object
+         * and options.
+         *
+         * @param ns the namespace of the query.
+         * @param queryObj the query object to check.
+         * @param queryOptions the query options
+         *
+         * @return true if the query/cmd could potentially be sent to a secondary, false otherwise
+         */
+        static bool isSecondaryQuery( const string& ns,
+                                      const BSONObj& queryObj,
+                                      int queryOptions );
 
     protected:
         /** Authorize.  Authorizes all nodes as needed
@@ -605,10 +618,11 @@ namespace mongo {
          */
         class LazyState {
         public:
-            LazyState() : _lastClient( NULL ), _lastOp( -1 ), _slaveOk( false ), _retries( 0 ) {}
+            LazyState() :
+                _lastClient( NULL ), _lastOp( -1 ), _secondaryQueryOk( false ), _retries( 0 ) {}
             DBClientConnection* _lastClient;
             int _lastOp;
-            bool _slaveOk;
+            bool _secondaryQueryOk;
             int _retries;
 
         } _lazyState;

@@ -55,10 +55,6 @@ namespace mongo {
     Database::~Database() {
         verify( Lock::isW() );
         _magic = 0;
-        if( _ccByLoc.size() ) {
-            log() << "\n\n\nWARNING: ccByLoc not empty on database close! "
-                  << _ccByLoc.size() << ' ' << _name << endl;
-        }
 
         for ( CollectionMap::iterator i = _collections.begin(); i != _collections.end(); ++i ) {
             delete i->second;
@@ -611,7 +607,8 @@ namespace mongo {
         Collection* collection = getCollection( _namespacesName );
         if ( !collection )
             collection = createCollection( _namespacesName );
-        collection->insertDocument( obj, false );
+        StatusWith<DiskLoc> loc = collection->insertDocument( obj, false );
+        uassertStatusOK( loc.getStatus() );
     }
 
     Status Database::_dropNS( const StringData& ns ) {

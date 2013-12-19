@@ -12,6 +12,18 @@
 *
 *    You should have received a copy of the GNU Affero General Public License
 *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+*
+*    As a special exception, the copyright holders give permission to link the
+*    code of portions of this program with the OpenSSL library under certain
+*    conditions as described in each individual source file and distribute
+*    linked combinations including the program with the OpenSSL library. You
+*    must comply with the GNU Affero General Public License in all respects
+*    for all of the code used other than as permitted herein. If you modify
+*    file(s) with this exception, you may extend this exception to your
+*    version of the file(s), but you are not obligated to do so. If you do not
+*    wish to do so, delete this exception statement from your version. If you
+*    delete this exception statement from all source files in the program,
+*    then also delete it in the license file.
 */
 
 #include "mongo/pch.h"
@@ -460,35 +472,30 @@ private:
         return nfields == obj2.nFields();
     }
 
-    void createCollectionWithOptions(BSONObj cmdObj) {
+    void createCollectionWithOptions(BSONObj obj) {
+        BSONObjIterator i(obj);
 
-        // Create a new cmdObj to skip undefined fields and fix collection name
+        // Rebuild obj as a command object for the "create" command.
+        // - {create: <name>} comes first, where <name> is the new name for the collection
+        // - elements with type Undefined get skipped over
         BSONObjBuilder bo;
-
-        // Add a "create" field if it doesn't exist
-        if (!cmdObj.hasField("create")) {
-            bo.append("create", _curcoll);
-        }
-
-        BSONObjIterator i(cmdObj);
-        while ( i.more() ) {
+        bo.append("create", _curcoll);
+        while (i.more()) {
             BSONElement e = i.next();
 
-            // Replace the "create" field with the name of the collection we are actually creating
             if (strcmp(e.fieldName(), "create") == 0) {
-                bo.append("create", _curcoll);
+                continue;
             }
-            else {
-                if (e.type() == Undefined) {
-                    toolInfoLog() << _curns << ": skipping undefined field: " << e.fieldName()
-                                  << std::endl;
-                }
-                else {
-                    bo.append(e);
-                }
+
+            if (e.type() == Undefined) {
+                toolInfoLog() << _curns << ": skipping undefined field: " << e.fieldName()
+                              << std::endl;
+                continue;
             }
+
+            bo.append(e);
         }
-        cmdObj = bo.obj();
+        obj = bo.obj();
 
         BSONObj fields = BSON("options" << 1);
         scoped_ptr<DBClientCursor> cursor(conn().query(_curdb + ".system.namespaces", Query(BSON("name" << _curns)), 0, 0, &fields));
@@ -497,7 +504,7 @@ private:
         if (cursor->more()) {
             createColl = false;
             BSONObj obj = cursor->next();
-            if (!obj.hasField("options") || !optionsSame(cmdObj, obj["options"].Obj())) {
+            if (!obj.hasField("options") || !optionsSame(obj, obj["options"].Obj())) {
                 toolError() << "WARNING: collection " << _curns
                           << " exists with different options than are in the metadata.json file and"
                           << " not using --drop. Options in the metadata file will be ignored."
@@ -510,11 +517,11 @@ private:
         }
 
         BSONObj info;
-        if (!conn().runCommand(_curdb, cmdObj, info)) {
+        if (!conn().runCommand(_curdb, obj, info)) {
             uasserted(15936, "Creating collection " + _curns + " failed. Errmsg: " + info["errmsg"].String());
         } else {
             toolInfoLog() << "\tCreated collection " << _curns << " with options: "
-                          << cmdObj.jsonString() << std::endl;
+                          << obj.jsonString() << std::endl;
         }
     }
 

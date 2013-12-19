@@ -36,6 +36,8 @@
 namespace mongo {
 
     struct QueryPlannerParams {
+        QueryPlannerParams() : options(DEFAULT) { }
+
         enum Options {
             // You probably want to set this.
             DEFAULT = 0,
@@ -52,7 +54,8 @@ namespace mongo {
             //
             // In order to set this, you must check
             // shardingState.needCollectionMetadata(current_namespace) in the same lock that you use
-            // to build the query runner.
+            // to build the query runner. You must also wrap the Runner in a ClientCursor within the
+            // same lock. See the comment on ShardFilterStage for details.
             INCLUDE_SHARD_FILTER = 4,
 
             // Set this if you don't want any plans with a blocking sort stage.  All sorts must be

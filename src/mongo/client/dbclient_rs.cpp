@@ -174,54 +174,6 @@ namespace mongo {
     } _populateReadPrefSecOkCmdList;
 
     /**
-     * @param ns the namespace of the query.
-     * @param queryOptionFlags the flags for the query.
-     * @param queryObj the query object to check.
-     *
-     * @return true if the given query can be sent to a secondary node without taking the
-     *     slaveOk flag into account.
-     */
-    bool _isQueryOkToSecondary(const string& ns, int queryOptionFlags, const BSONObj& queryObj) {
-        if (queryOptionFlags & QueryOption_SlaveOk) {
-            return true;
-        }
-
-        if (!Query::hasReadPreference(queryObj)) {
-            return false;
-        }
-
-        if (ns.find(".$cmd") == string::npos) {
-            return true;
-        }
-
-        BSONObj actualQueryObj;
-        if (strcmp(queryObj.firstElement().fieldName(), "query") == 0) {
-            actualQueryObj = queryObj["query"].embeddedObject();
-        }
-        else {
-            actualQueryObj = queryObj;
-        }
-
-        const string cmdName = actualQueryObj.firstElementFieldName();
-        if (_secOkCmdList.count(cmdName) == 1) {
-            return true;
-        }
-
-        if (cmdName == "mapReduce" || cmdName == "mapreduce") {
-            if (!actualQueryObj.hasField("out")) {
-                return false;
-            }
-
-            BSONElement outElem(actualQueryObj["out"]);
-            if (outElem.isABSONObj() && outElem["inline"].trueValue()) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    /**
      * Selects the right node given the nodes to pick from and the preference.
      * This method does strict tag matching, and will not implicitly fallback
      * to matching anything.
@@ -323,15 +275,18 @@ namespace mongo {
      *
      * @param query the raw query document
      *
-     * @return the read preference setting. If the tags field was not present, it will contain one
-     *      empty tag document {} which matches any tag.
+     * @return the read preference setting if a read preference exists, otherwise the default read
+     *         preference of Primary_Only. If the tags field was not present, it will contain one
+     *         empty tag document {} which matches any tag.
      *
      * @throws AssertionException if the read preference object is malformed
      */
-    ReadPreferenceSetting* _extractReadPref(const BSONObj& query) {
-        ReadPreference pref = mongo::ReadPreference_SecondaryPreferred;
+    ReadPreferenceSetting* _extractReadPref(const BSONObj& query, int queryOptions) {
 
         if (Query::hasReadPreference(query)) {
+
+            ReadPreference pref = mongo::ReadPreference_SecondaryPreferred;
+
             BSONElement readPrefElement;
 
             if (query.hasField(Query::ReadPrefField.name())) {
@@ -382,9 +337,17 @@ namespace mongo {
 
                 return new ReadPreferenceSetting(pref, tags);
             }
+            else {
+                TagSet tags(BSON_ARRAY(BSONObj()));
+                return new ReadPreferenceSetting(pref, tags);
+            }
         }
 
+        // Default read pref is primary only or secondary preferred with slaveOK
         TagSet tags(BSON_ARRAY(BSONObj()));
+        ReadPreference pref =
+            queryOptions & QueryOption_SlaveOk ?
+                mongo::ReadPreference_SecondaryPreferred : mongo::ReadPreference_PrimaryOnly;
         return new ReadPreferenceSetting(pref, tags);
     }
 
@@ -1454,6 +1417,55 @@ namespace mongo {
         return true;
     }
 
+    // Internal implementation of isSecondaryQuery, takes previously-parsed read preference
+    static bool _isSecondaryQuery( const string& ns,
+                                   const BSONObj& queryObj,
+                                   const ReadPreferenceSetting& readPref ) {
+
+        // If the read pref is primary only, this is not a secondary query
+        if (readPref.pref == ReadPreference_PrimaryOnly) return false;
+
+        if (ns.find(".$cmd") == string::npos) {
+            return true;
+        }
+
+        // This is a command with secondary-possible read pref
+        // Only certain commands are supported for secondary operation.
+
+        BSONObj actualQueryObj;
+        if (strcmp(queryObj.firstElement().fieldName(), "query") == 0) {
+            actualQueryObj = queryObj["query"].embeddedObject();
+        }
+        else {
+            actualQueryObj = queryObj;
+        }
+
+        const string cmdName = actualQueryObj.firstElementFieldName();
+        if (_secOkCmdList.count(cmdName) == 1) {
+            return true;
+        }
+
+        if (cmdName == "mapReduce" || cmdName == "mapreduce") {
+            if (!actualQueryObj.hasField("out")) {
+                return false;
+            }
+
+            BSONElement outElem(actualQueryObj["out"]);
+            if (outElem.isABSONObj() && outElem["inline"].trueValue()) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    bool DBClientReplicaSet::isSecondaryQuery( const string& ns,
+                                               const BSONObj& queryObj,
+                                               int queryOptions ) {
+        auto_ptr<ReadPreferenceSetting> readPref( _extractReadPref( queryObj, queryOptions ) );
+        return _isSecondaryQuery( ns, queryObj, *readPref );
+    }
+
     DBClientConnection * DBClientReplicaSet::checkMaster() {
         ReplicaSetMonitorPtr monitor = _getMonitor();
         HostAndPort h = monitor->getMaster();
@@ -1546,7 +1558,7 @@ namespace mongo {
         return _getMonitor()->isAnyNodeOk();
     }
 
-    static bool isAuthException( const DBException& ex ) {
+    static bool isAuthenticationException( const DBException& ex ) {
         return ex.getCode() == ErrorCodes::AuthenticationFailed;
     }
 
@@ -1594,8 +1606,7 @@ namespace mongo {
             catch ( const DBException &ex ) {
 
                 // We care if we can't authenticate (i.e. bad password) in credential params.
-                // We shouldn't be unauthorized since we aren't doing anything yet.
-                if ( isAuthException( ex ) ) {
+                if ( isAuthenticationException( ex ) ) {
                     throw;
                 }
 
@@ -1667,9 +1678,8 @@ namespace mongo {
                                                        int queryOptions,
                                                        int batchSize) {
 
-        if ( _isQueryOkToSecondary( ns, queryOptions, query.obj ) ) {
-
-            shared_ptr<ReadPreferenceSetting> readPref(_extractReadPref(query.obj));
+        shared_ptr<ReadPreferenceSetting> readPref( _extractReadPref( query.obj, queryOptions ) );
+        if ( _isSecondaryQuery( ns, query.obj, *readPref ) ) {
 
             LOG( 3 ) << "dbclient_rs query using secondary or tagged node selection in "
                                 << _getMonitor()->getName() << ", read pref is "
@@ -1726,9 +1736,9 @@ namespace mongo {
                                         const Query& query,
                                         const BSONObj *fieldsToReturn,
                                         int queryOptions) {
-        if (_isQueryOkToSecondary(ns, queryOptions, query.obj)) {
 
-            shared_ptr<ReadPreferenceSetting> readPref(_extractReadPref(query.obj));
+        shared_ptr<ReadPreferenceSetting> readPref( _extractReadPref( query.obj, queryOptions ) );
+        if ( _isSecondaryQuery( ns, query.obj, *readPref ) ) {
 
             LOG( 3 ) << "dbclient_rs findOne using secondary or tagged node selection in "
                                 << _getMonitor()->getName() << ", read pref is "
@@ -1892,17 +1902,15 @@ namespace mongo {
             _lazyState = LazyState();
 
         const int lastOp = toSend.operation();
-        bool slaveOk = false;
 
         if (lastOp == dbQuery) {
             // TODO: might be possible to do this faster by changing api
             DbMessage dm(toSend);
             QueryMessage qm(dm);
 
-            const bool slaveOk = qm.queryOptions & QueryOption_SlaveOk;
-            if (_isQueryOkToSecondary(qm.ns, qm.queryOptions, qm.query)) {
-
-                shared_ptr<ReadPreferenceSetting> readPref(_extractReadPref(qm.query));
+            shared_ptr<ReadPreferenceSetting> readPref( _extractReadPref( qm.query,
+                                                                          qm.queryOptions ) );
+            if ( _isSecondaryQuery( qm.ns, qm.query, *readPref ) ) {
 
                 LOG( 3 ) << "dbclient_rs say using secondary or tagged node selection in "
                                     << _getMonitor()->getName() << ", read pref is "
@@ -1932,7 +1940,7 @@ namespace mongo {
                         conn->say(toSend);
 
                         _lazyState._lastOp = lastOp;
-                        _lazyState._slaveOk = slaveOk;
+                        _lazyState._secondaryQueryOk = true;
                         _lazyState._lastClient = conn;
                     }
                     catch ( const DBException& DBExcep ) {
@@ -1967,7 +1975,7 @@ namespace mongo {
             *actualServer = master->getServerAddress();
 
         _lazyState._lastOp = lastOp;
-        _lazyState._slaveOk = slaveOk;
+        _lazyState._secondaryQueryOk = false;
         // Don't retry requests to primary since there is only one host to try
         _lazyState._retries = MAX_RETRY;
         _lazyState._lastClient = master;
@@ -2006,46 +2014,52 @@ namespace mongo {
         else if (targetHost) *targetHost = "";
 
         if( ! _lazyState._lastClient ) return;
+
+        // nReturned == 1 means that we got one result back, which might be an error
+        // nReturned == -1 is a sentinel value for "no data returned" aka (usually) network problem
+        // If neither, this must be a query result so our response is ok wrt the replica set
         if( nReturned != 1 && nReturned != -1 ) return;
 
         BSONObj dataObj;
         if( nReturned == 1 ) dataObj = BSONObj( data );
 
         // Check if we should retry here
-        if( _lazyState._lastOp == dbQuery && _lazyState._slaveOk ){
+        if( _lazyState._lastOp == dbQuery && _lazyState._secondaryQueryOk ){
 
-            // Check the error code for a slave not secondary error
-            if( nReturned == -1 ||
+            // query could potentially go to a secondary, so see if this is an error (or empty) and
+            // retry if we're not past our retry limit.
+
+            if( nReturned == -1 /* no result, maybe network problem */ ||
                 ( hasErrField( dataObj ) &&  ! dataObj["code"].eoo()
                   && dataObj["code"].Int() == NotMasterOrSecondaryCode ) ){
 
-                bool wasMaster = false;
                 if( _lazyState._lastClient == _lastSlaveOkConn.get() ){
                     isntSecondary();
                 }
                 else if( _lazyState._lastClient == _master.get() ){
-                    wasMaster = true;
                     isntMaster();
                 }
-                else
-                    warning() << "passed " << dataObj << " but last rs client " << _lazyState._lastClient->toString() << " is not master or secondary" << endl;
+                else {
+                    warning() << "passed " << dataObj << " but last rs client "
+                              << _lazyState._lastClient->toString() << " is not master or secondary"
+                              << endl;
+                }
 
-                if( _lazyState._retries < 3 ){
+                if ( _lazyState._retries < static_cast<int>( MAX_RETRY ) ) {
                     _lazyState._retries++;
                     *retry = true;
                 }
                 else{
-                    (void)wasMaster; // silence set-but-not-used warning
-                    // verify( wasMaster );
-                    // printStackTrace();
-                    log() << "too many retries (" << _lazyState._retries << "), could not get data from replica set" << endl;
+                    log() << "too many retries (" << _lazyState._retries
+                          << "), could not get data from replica set" << endl;
                 }
             }
         }
         else if( _lazyState._lastOp == dbQuery ){
-            // slaveOk is not set, just mark the master as bad
 
-            if( nReturned == -1 ||
+            // if query could not potentially go to a secondary, just mark the master as bad
+
+            if( nReturned == -1 /* no result, maybe network problem */ ||
                ( hasErrField( dataObj ) &&  ! dataObj["code"].eoo()
                  && dataObj["code"].Int() == NotMasterNoSlaveOkCode ) )
             {
@@ -2069,9 +2083,9 @@ namespace mongo {
             QueryMessage qm(dm);
             ns = qm.ns;
 
-            if (_isQueryOkToSecondary(ns, qm.queryOptions, qm.query)) {
-
-                shared_ptr<ReadPreferenceSetting> readPref(_extractReadPref(qm.query));
+            shared_ptr<ReadPreferenceSetting> readPref( _extractReadPref( qm.query,
+                                                                          qm.queryOptions ) );
+            if ( _isSecondaryQuery( ns, qm.query, *readPref ) ) {
 
                 LOG( 3 ) << "dbclient_rs call using secondary or tagged node selection in "
                                     << _getMonitor()->getName() << ", read pref is "

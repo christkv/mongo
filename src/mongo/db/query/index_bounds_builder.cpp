@@ -45,7 +45,7 @@ namespace mongo {
     string IndexBoundsBuilder::simpleRegex(const char* regex, const char* flags,
                                            BoundsTightness* tightnessOut) {
         string r = "";
-        *tightnessOut = IndexBoundsBuilder::INEXACT_FETCH;
+        *tightnessOut = IndexBoundsBuilder::INEXACT_COVERED;
 
         bool multilineOK;
         if ( regex[0] == '\\' && regex[1] == 'A') {
@@ -139,7 +139,7 @@ namespace mongo {
 
         if ( r.empty() && *regex == 0 ) {
             r = ss.str();
-            *tightnessOut = r.empty() ? IndexBoundsBuilder::INEXACT_FETCH : IndexBoundsBuilder::EXACT;
+            *tightnessOut = r.empty() ? IndexBoundsBuilder::INEXACT_COVERED : IndexBoundsBuilder::EXACT;
         }
 
         return r;
@@ -225,9 +225,6 @@ namespace mongo {
                 OrderedIntervalList next;
                 BoundsTightness tightness;
                 translate(expr->getChild(i), elt, &next, &tightness);
-                if (tightness != IndexBoundsBuilder::EXACT) {
-                    *tightnessOut = tightness;
-                }
                 intersectize(next, &acc);
             }
 
@@ -238,6 +235,11 @@ namespace mongo {
             if (!oilOut->intervals.empty()) {
                 std::sort(oilOut->intervals.begin(), oilOut->intervals.end(), IntervalComparison);
             }
+            // $elemMatch value requires an array.
+            // Scalars and directly nested objects are not matched with $elemMatch.
+            // We can't tell if a multi-key index key is derived from an array field.
+            // Therefore, a fetch is required.
+            *tightnessOut = IndexBoundsBuilder::INEXACT_FETCH;
         }
         else if (MatchExpression::EQ == expr->matchType()) {
             const EqualityMatchExpression* node = static_cast<const EqualityMatchExpression*>(expr);
@@ -372,7 +374,7 @@ namespace mongo {
             BSONObj dataObj = bob.obj();
             verify(dataObj.isOwned());
             oilOut->intervals.push_back(makeRangeInterval(dataObj, true, true));
-            *tightnessOut = IndexBoundsBuilder::INEXACT_FETCH;
+            *tightnessOut = IndexBoundsBuilder::INEXACT_COVERED;
         }
         else if (MatchExpression::TYPE_OPERATOR == expr->matchType()) {
             const TypeMatchExpression* tme = static_cast<const TypeMatchExpression*>(expr);
@@ -557,7 +559,7 @@ namespace mongo {
                 bob.appendAs(iv[i + 1].end, "");
                 BSONObj data = bob.obj();
                 bool startInclusive = iv[i].startInclusive;
-                bool endInclusive = iv[i + i].endInclusive;
+                bool endInclusive = iv[i + 1].endInclusive;
                 iv.erase(iv.begin() + i);
                 // iv[i] is now the former iv[i + 1]
                 iv[i] = makeRangeInterval(data, startInclusive, endInclusive);

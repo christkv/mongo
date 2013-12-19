@@ -35,6 +35,7 @@
 #include "mongo/s/write_ops/batched_command_response.h"
 #include "mongo/s/write_ops/batched_delete_document.h"
 #include "mongo/s/write_ops/batched_update_document.h"
+#include "mongo/util/mongoutils/str.h"
 
 namespace mongo {
 
@@ -68,11 +69,17 @@ namespace mongo {
         struct WriteStats {
 
             WriteStats() :
-                    numInserted( 0 ), numUpdated( 0 ), numUpserted( 0 ), numDeleted( 0 ) {
+                    numInserted( 0 ), numModified( 0 ), numUpdated( 0 ),
+                    numUpserted( 0 ), numDeleted( 0 ) {
             }
 
             int numInserted;
+
+            // The number of docs modified and updated (inc no-ops).
+            // NOTE: The difference of the two are the number of no-ops.
+            int numModified;
             int numUpdated;
+
             int numUpserted;
             int numDeleted;
         };
@@ -86,7 +93,7 @@ namespace mongo {
         bool applyWriteItem( const BatchItemRef& itemRef,
                              WriteStats* stats,
                              BSONObj* upsertedID,
-                             BatchedErrorDetail* error );
+                             WriteErrorDetail* error );
 
         //
         // Helpers to issue underlying write.
@@ -99,26 +106,26 @@ namespace mongo {
                       CurOp* currentOp,
                       WriteStats* stats,
                       BSONObj* upsertedID,
-                      BatchedErrorDetail* error );
+                      WriteErrorDetail* error );
 
         bool doInsert( const std::string& ns,
                        const BSONObj& insertOp,
                        CurOp* currentOp,
                        WriteStats* stats,
-                       BatchedErrorDetail* error );
+                       WriteErrorDetail* error );
 
         bool doUpdate( const std::string& ns,
                        const BatchedUpdateDocument& updateOp,
                        CurOp* currentOp,
                        WriteStats* stats,
                        BSONObj* upsertedID,
-                       BatchedErrorDetail* error );
+                       WriteErrorDetail* error );
 
         bool doDelete( const std::string& ns,
                        const BatchedDeleteDocument& deleteOp,
                        CurOp* currentOp,
                        WriteStats* stats,
-                       BatchedErrorDetail* error );
+                       WriteErrorDetail* error );
 
         // Default write concern, if one isn't provide in the batches.
         const BSONObj _defaultWriteConcern;

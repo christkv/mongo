@@ -45,8 +45,13 @@ namespace mongo {
     class WorkingSet;
 
     struct IndexScanParams {
-        IndexScanParams() : descriptor(NULL), direction(1), limit(0),
-                            forceBtreeAccessMethod(false), doNotDedup(false) { }
+        IndexScanParams() : descriptor(NULL),
+                            direction(1),
+                            limit(0),
+                            forceBtreeAccessMethod(false),
+                            doNotDedup(false),
+                            maxScan(0),
+                            addKeyMetadata(false) { }
 
         IndexDescriptor* descriptor;
 
@@ -61,6 +66,12 @@ namespace mongo {
         bool forceBtreeAccessMethod;
 
         bool doNotDedup;
+
+        // How many keys will we look at?
+        size_t maxScan;
+
+        // Do we want to add the key as metadata?
+        bool addKeyMetadata;
     };
 
     /**

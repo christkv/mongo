@@ -1118,6 +1118,9 @@ namespace mongo {
                                       res)) {
                     errmsg = "move failed";
                     result.append( "cause" , res );
+                    if ( !res["code"].eoo() ) {
+                        result.append( res["code"] );
+                    }
                     return false;
                 }
 
@@ -1496,13 +1499,33 @@ namespace mongo {
             virtual bool run(const string& dbName, BSONObj& cmdObj, int, string& errmsg, BSONObjBuilder& result, bool) {
                 LastError *le = lastError.disableForCommand();
                 verify( le );
+
+                if ( Strategy::useClusterWriteCommands ) {
+
+                    // Write commands always have the error stored in the mongos last error
+                    if ( le->nPrev == 1 ) {
+                        le->appendSelf( result );
+                    }
+                    else {
+                        result.appendNull( "err" );
+                    }
+
+                    bool wcResult = ClientInfo::get()->enforceWriteConcern( dbName,
+                                                                            cmdObj,
+                                                                            &errmsg );
+
+                    // Don't forget about our last hosts, reset the client info
+                    ClientInfo::get()->disableForCommand();
+                    return wcResult;
+                }
+
                 {
-                    if ( Strategy::useClusterWriteCommands ||
-                         ( le->msg.size() && le->nPrev == 1 ) ) {
+                    if ( le->msg.size() && le->nPrev == 1 ) {
                         le->appendSelf( result );
                         return true;
                     }
                 }
+
                 ClientInfo * client = ClientInfo::get();
                 bool res = client->getLastError( dbName, cmdObj , result, errmsg );
                 client->disableForCommand();
@@ -1529,7 +1552,7 @@ namespace mongo {
                 le->reset();
 
             ClientInfo * client = ClientInfo::get();
-            set<string> * shards = client->getPrev();
+            set<string> * shards = client->getPrevShardHosts();
 
             for ( set<string>::iterator i = shards->begin(); i != shards->end(); i++ ) {
                 string theShard = *i;

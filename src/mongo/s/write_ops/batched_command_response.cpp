@@ -12,6 +12,18 @@
  *
  *    You should have received a copy of the GNU Affero General Public License
  *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ *    As a special exception, the copyright holders give permission to link the
+ *    code of portions of this program with the OpenSSL library under certain
+ *    conditions as described in each individual source file and distribute
+ *    linked combinations including the program with the OpenSSL library. You
+ *    must comply with the GNU Affero General Public License in all respects
+ *    for all of the code used other than as permitted herein. If you modify
+ *    file(s) with this exception, you may extend this exception to your
+ *    version of the file(s), but you are not obligated to do so. If you do not
+ *    wish to do so, delete this exception statement from your version. If you
+ *    delete this exception statement from all source files in the program,
+ *    then also delete it in the license file.
  */
 
 #include "mongo/s/write_ops/batched_command_response.h"
@@ -28,12 +40,14 @@ namespace mongo {
     const BSONField<BSONObj> BatchedCommandResponse::errInfo("errInfo");
     const BSONField<string> BatchedCommandResponse::errMessage("errmsg");
     const BSONField<long long> BatchedCommandResponse::n("n", 0);
+    const BSONField<long long> BatchedCommandResponse::nDocsModified("nDocsModified", 0);
     const BSONField<BSONObj> BatchedCommandResponse::singleUpserted("upserted");
     const BSONField<std::vector<BatchedUpsertDetail*> >
         BatchedCommandResponse::upsertDetails("upserted");
     const BSONField<Date_t> BatchedCommandResponse::lastOp("lastOp");
-    const BSONField<std::vector<BatchedErrorDetail*> >
-        BatchedCommandResponse::errDetails("errDetails");
+    const BSONField<std::vector<WriteErrorDetail*> >
+        BatchedCommandResponse::writeErrors("writeErrors");
+    const BSONField<BSONObj> BatchedCommandResponse::writeConcernError("writeConcernError");
 
     BatchedCommandResponse::BatchedCommandResponse() {
         clear();
@@ -75,6 +89,7 @@ namespace mongo {
 
         if (_isErrMessageSet) builder.append(errMessage(), _errMessage);
 
+        if (_isNDocsModifiedSet) builder.appendNumber(nDocsModified(), _nDocsModified);
         if (_isNSet) builder.appendNumber(n(), _n);
 
         // We're using the BSONObj to store the _id value.
@@ -95,15 +110,19 @@ namespace mongo {
 
         if (_isLastOpSet) builder.append(lastOp(), _lastOp);
 
-        if (_errDetails.get()) {
-            BSONArrayBuilder errDetailsBuilder(builder.subarrayStart(errDetails()));
-            for (std::vector<BatchedErrorDetail*>::const_iterator it = _errDetails->begin();
-                 it != _errDetails->end();
+        if (_writeErrorDetails.get()) {
+            BSONArrayBuilder errDetailsBuilder(builder.subarrayStart(writeErrors()));
+            for (std::vector<WriteErrorDetail*>::const_iterator it = _writeErrorDetails->begin();
+                 it != _writeErrorDetails->end();
                  ++it) {
                 BSONObj errDetailsDocument = (*it)->toBSON();
                 errDetailsBuilder.append(errDetailsDocument);
             }
             errDetailsBuilder.done();
+        }
+
+        if (_wcErrDetails.get()) {
+            builder.append(writeConcernError(), _wcErrDetails->toBSON());
         }
 
         return builder.obj();
@@ -134,7 +153,7 @@ namespace mongo {
 
         // We're using appendNumber on generation so we'll try a smaller type
         // (int) first and then fall back to the original type (long long).
-        BSONField<int> fieldN("n");
+        BSONField<int> fieldN(n());
         int tempN;
         fieldState = FieldParser::extract(source, fieldN, &tempN, errMsg);
         if (fieldState == FieldParser::FIELD_INVALID) {
@@ -146,6 +165,22 @@ namespace mongo {
         else if (fieldState == FieldParser::FIELD_SET) {
             _isNSet = true;
             _n = tempN;
+        }
+
+        // We're using appendNumber on generation so we'll try a smaller type
+        // (int) first and then fall back to the original type (long long).
+        BSONField<int> fieldNUpdated(nDocsModified());
+        int tempNUpdated;
+        fieldState = FieldParser::extract(source, fieldNUpdated, &tempNUpdated, errMsg);
+        if (fieldState == FieldParser::FIELD_INVALID) {
+            // try falling back to a larger type
+            fieldState = FieldParser::extract(source, nDocsModified, &_nDocsModified, errMsg);
+            if (fieldState == FieldParser::FIELD_INVALID) return false;
+            _isNDocsModifiedSet = fieldState == FieldParser::FIELD_SET;
+        }
+        else if (fieldState == FieldParser::FIELD_SET) {
+            _isNDocsModifiedSet = true;
+            _nDocsModified = tempNUpdated;
         }
 
         // singleUpserted and upsertDetails have the same field name, but are distinguished
@@ -165,10 +200,24 @@ namespace mongo {
         if (fieldState == FieldParser::FIELD_INVALID) return false;
         _isLastOpSet = fieldState == FieldParser::FIELD_SET;
 
-        std::vector<BatchedErrorDetail*>* tempErrDetails = NULL;
-        fieldState = FieldParser::extract(source, errDetails, &tempErrDetails, errMsg);
+        std::vector<WriteErrorDetail*>* tempErrDetails = NULL;
+        fieldState = FieldParser::extract(source, writeErrors, &tempErrDetails, errMsg);
         if (fieldState == FieldParser::FIELD_INVALID) return false;
-        if (fieldState == FieldParser::FIELD_SET) _errDetails.reset(tempErrDetails);
+        if (fieldState == FieldParser::FIELD_SET) _writeErrorDetails.reset(tempErrDetails);
+
+        BSONObj wcErrorObj;
+        fieldState = FieldParser::extract(source, writeConcernError, &wcErrorObj, errMsg);
+        if (fieldState == FieldParser::FIELD_INVALID) return false;
+
+        if (!wcErrorObj.isEmpty()) {
+            auto_ptr<WCErrorDetail> tempWCerror;
+            tempWCerror.reset(new WCErrorDetail());
+            if (!tempWCerror->parseBSON(wcErrorObj, errMsg)) {
+                return false;
+            }
+
+            _wcErrDetails.reset(tempWCerror.release());
+        }
 
         return true;
     }
@@ -186,25 +235,30 @@ namespace mongo {
         _errMessage.clear();
         _isErrMessageSet = false;
 
+        _nDocsModified = 0;
+        _isNDocsModifiedSet = false;
+
         _n = 0;
         _isNSet = false;
 
         _singleUpserted = BSONObj();
         _isSingleUpsertedSet = false;
 
-        _errDetails.reset();
+        _writeErrorDetails.reset();
 
         _lastOp = 0ULL;
         _isLastOpSet = false;
 
-        if (_errDetails.get()) {
-            for(std::vector<BatchedErrorDetail*>::const_iterator it = _errDetails->begin();
-                it != _errDetails->end();
+        if (_writeErrorDetails.get()) {
+            for(std::vector<WriteErrorDetail*>::const_iterator it = _writeErrorDetails->begin();
+                it != _writeErrorDetails->end();
                 ++it) {
                 delete *it;
             };
-            _errDetails.reset();
+            _writeErrorDetails.reset();
         }
+
+        _wcErrDetails.reset();
     }
 
     void BatchedCommandResponse::cloneTo(BatchedCommandResponse* other) const {
@@ -221,6 +275,9 @@ namespace mongo {
 
         other->_errMessage = _errMessage;
         other->_isErrMessageSet = _isErrMessageSet;
+
+        other->_nDocsModified = _nDocsModified;
+        other->_isNDocsModifiedSet = _isNDocsModifiedSet;
 
         other->_n = _n;
         other->_isNSet = _isNSet;
@@ -243,14 +300,19 @@ namespace mongo {
         other->_isLastOpSet = _isLastOpSet;
 
         other->unsetErrDetails();
-        if (_errDetails.get()) {
-            for(std::vector<BatchedErrorDetail*>::const_iterator it = _errDetails->begin();
-                it != _errDetails->end();
+        if (_writeErrorDetails.get()) {
+            for(std::vector<WriteErrorDetail*>::const_iterator it = _writeErrorDetails->begin();
+                it != _writeErrorDetails->end();
                 ++it) {
-                BatchedErrorDetail* errDetailsItem = new BatchedErrorDetail;
+                WriteErrorDetail* errDetailsItem = new WriteErrorDetail;
                 (*it)->cloneTo(errDetailsItem);
                 other->addToErrDetails(errDetailsItem);
             }
+        }
+
+        if (_wcErrDetails.get()) {
+            other->_wcErrDetails.reset(new WCErrorDetail());
+            _wcErrDetails->cloneTo(other->_wcErrDetails.get());
         }
     }
 
@@ -332,6 +394,28 @@ namespace mongo {
     const std::string& BatchedCommandResponse::getErrMessage() const {
         dassert(_isErrMessageSet);
         return _errMessage;
+    }
+
+    void BatchedCommandResponse::setNDocsModified(long long n) {
+        _nDocsModified = n;
+        _isNDocsModifiedSet = true;
+    }
+
+    void BatchedCommandResponse::unsetNDocsModified() {
+         _isNDocsModifiedSet = false;
+     }
+
+    bool BatchedCommandResponse::isNDocsModified() const {
+         return _isNDocsModifiedSet;
+    }
+
+    long long BatchedCommandResponse::getNDocsModified() const {
+        if ( _isNDocsModifiedSet ) {
+            return _nDocsModified;
+        }
+        else {
+            return nDocsModified.getDefault();
+        }
     }
 
     void BatchedCommandResponse::setN(long long n) {
@@ -442,53 +526,70 @@ namespace mongo {
         return _lastOp;
     }
 
-    void BatchedCommandResponse::setErrDetails(const std::vector<BatchedErrorDetail*>& errDetails) {
+    void BatchedCommandResponse::setErrDetails(const std::vector<WriteErrorDetail*>& errDetails) {
         unsetErrDetails();
-        for (std::vector<BatchedErrorDetail*>::const_iterator it = errDetails.begin();
+        for (std::vector<WriteErrorDetail*>::const_iterator it = errDetails.begin();
              it != errDetails.end();
              ++it) {
-            auto_ptr<BatchedErrorDetail> tempBatchErrorDetail(new BatchedErrorDetail);
+            auto_ptr<WriteErrorDetail> tempBatchErrorDetail(new WriteErrorDetail);
             (*it)->cloneTo(tempBatchErrorDetail.get());
             addToErrDetails(tempBatchErrorDetail.release());
         }
     }
 
-    void BatchedCommandResponse::addToErrDetails(BatchedErrorDetail* errDetails) {
-        if (_errDetails.get() == NULL) {
-            _errDetails.reset(new std::vector<BatchedErrorDetail*>);
+    void BatchedCommandResponse::addToErrDetails(WriteErrorDetail* errDetails) {
+        if (_writeErrorDetails.get() == NULL) {
+            _writeErrorDetails.reset(new std::vector<WriteErrorDetail*>);
         }
-        _errDetails->push_back(errDetails);
+        _writeErrorDetails->push_back(errDetails);
     }
 
     void BatchedCommandResponse::unsetErrDetails() {
-        if (_errDetails.get() != NULL) {
-            for(std::vector<BatchedErrorDetail*>::iterator it = _errDetails->begin();
-                it != _errDetails->end();
+        if (_writeErrorDetails.get() != NULL) {
+            for(std::vector<WriteErrorDetail*>::iterator it = _writeErrorDetails->begin();
+                it != _writeErrorDetails->end();
                 ++it) {
                 delete *it;
             }
-            _errDetails.reset();
+            _writeErrorDetails.reset();
         }
     }
 
     bool BatchedCommandResponse::isErrDetailsSet() const {
-        return _errDetails.get() != NULL;
+        return _writeErrorDetails.get() != NULL;
     }
 
     size_t BatchedCommandResponse::sizeErrDetails() const {
-        dassert(_errDetails.get());
-        return _errDetails->size();
+        dassert(_writeErrorDetails.get());
+        return _writeErrorDetails->size();
     }
 
-    const std::vector<BatchedErrorDetail*>& BatchedCommandResponse::getErrDetails() const {
-        dassert(_errDetails.get());
-        return *_errDetails;
+    const std::vector<WriteErrorDetail*>& BatchedCommandResponse::getErrDetails() const {
+        dassert(_writeErrorDetails.get());
+        return *_writeErrorDetails;
     }
 
-    const BatchedErrorDetail* BatchedCommandResponse::getErrDetailsAt(size_t pos) const {
-        dassert(_errDetails.get());
-        dassert(_errDetails->size() > pos);
-        return _errDetails->at(pos);
+    const WriteErrorDetail* BatchedCommandResponse::getErrDetailsAt(size_t pos) const {
+        dassert(_writeErrorDetails.get());
+        dassert(_writeErrorDetails->size() > pos);
+        return _writeErrorDetails->at(pos);
+    }
+
+    void BatchedCommandResponse::setWriteConcernError(const WCErrorDetail& error) {
+        _wcErrDetails.reset(new WCErrorDetail());
+        error.cloneTo(_wcErrDetails.get());
+    }
+
+    void BatchedCommandResponse::unsetWriteConcernError() {
+        _wcErrDetails.reset();
+    }
+
+    bool BatchedCommandResponse::isWriteConcernErrorSet() const {
+        return _wcErrDetails.get();
+    }
+
+    const WCErrorDetail* BatchedCommandResponse::getWriteConcernError() const {
+        return _wcErrDetails.get();
     }
 
 } // namespace mongo

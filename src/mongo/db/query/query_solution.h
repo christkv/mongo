@@ -185,7 +185,7 @@ namespace mongo {
     };
 
     struct TextNode : public QuerySolutionNode {
-        TextNode() : _numWanted(100) { }
+        TextNode() { }
         virtual ~TextNode() { }
 
         virtual StageType getType() const { return STAGE_TEXT; }
@@ -200,7 +200,6 @@ namespace mongo {
 
         BSONObjSet _sort;
 
-        uint32_t _numWanted;
         BSONObj  _indexKeyPattern;
         std::string _query;
         std::string _language;
@@ -228,6 +227,9 @@ namespace mongo {
         bool tailable;
 
         int direction;
+
+        // maxScan option to .find() limits how many docs we look at.
+        int maxScan;
     };
 
     struct AndHashNode : public QuerySolutionNode {
@@ -353,6 +355,12 @@ namespace mongo {
 
         int direction;
 
+        // maxScan option to .find() limits how many docs we look at.
+        int maxScan;
+
+        // If there's a 'returnKey' projection we add key metadata.
+        bool addKeyMetadata;
+
         // BIG NOTE:
         // If you use simple bounds, we'll use whatever index access method the keypattern implies.
         // If you use the complex bounds, we force Btree access.
@@ -406,7 +414,7 @@ namespace mongo {
     };
 
     struct SortNode : public QuerySolutionNode {
-        SortNode() { }
+        SortNode() : limit(0) { }
         virtual ~SortNode() { }
 
         virtual StageType getType() const { return STAGE_SORT; }
@@ -432,6 +440,9 @@ namespace mongo {
         BSONObj pattern;
 
         BSONObj query;
+
+        // Sum of both limit and skip count in the parsed query.
+        int limit;
     };
 
     struct LimitNode : public QuerySolutionNode {
@@ -490,7 +501,7 @@ namespace mongo {
 
     // This is a standalone stage.
     struct GeoNear2DNode : public QuerySolutionNode {
-        GeoNear2DNode() : numWanted(100) { }
+        GeoNear2DNode() : numWanted(100), addPointMeta(false), addDistMeta(false) { }
         virtual ~GeoNear2DNode() { }
 
         virtual StageType getType() const { return STAGE_GEO_NEAR_2D; }
@@ -505,11 +516,13 @@ namespace mongo {
         NearQuery nq;
         int numWanted;
         BSONObj indexKeyPattern;
+        bool addPointMeta;
+        bool addDistMeta;
     };
 
     // This is actually its own standalone stage.
     struct GeoNear2DSphereNode : public QuerySolutionNode {
-        GeoNear2DSphereNode() { }
+        GeoNear2DSphereNode() : addPointMeta(false), addDistMeta(false) { }
         virtual ~GeoNear2DSphereNode() { }
 
         virtual StageType getType() const { return STAGE_GEO_NEAR_2DSPHERE; }
@@ -526,6 +539,8 @@ namespace mongo {
         IndexBounds baseBounds;
 
         BSONObj indexKeyPattern;
+        bool addPointMeta;
+        bool addDistMeta;
     };
 
     //

@@ -41,6 +41,7 @@
 #include "mongo/s/chunk_version.h"
 #include "mongo/s/client_info.h"
 #include "mongo/s/config.h"
+#include "mongo/s/config_server_checker_service.h"
 #include "mongo/s/cursors.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/strategy.h"
@@ -385,6 +386,12 @@ namespace mongo {
             // since it nots 100% tcp queue bound
             // this was implicit before since we did a splitVector on the same socket
             ShardConnection::sync();
+
+            if ( !isConfigServerConsistent() ) {
+                 RARELY warning() << "will not perform auto-split because "
+                                  << "config servers are inconsistent" << endl;
+                return false;
+            }
 
             LOG(1) << "about to initiate autosplit: " << *this << " dataWritten: " << _dataWritten << " splitThreshold: " << splitThreshold << endl;
 
@@ -1310,8 +1317,13 @@ namespace mongo {
 
     ChunkVersion ChunkManager::getVersion( const Shard& shard ) const {
         ShardVersionMap::const_iterator i = _shardVersions.find( shard );
-        if ( i == _shardVersions.end() )
-            return ChunkVersion( 0, OID() );
+        if ( i == _shardVersions.end() ) {
+            // Shards without explicitly tracked shard versions (meaning they have
+            // no chunks) always have a version of (0, 0, epoch).  Note this is
+            // *different* from the dropped chunk version of (0, 0, OID(000...)).
+            // See s/chunk_version.h.
+            return ChunkVersion( 0, 0, _version.epoch() );
+        }
         return i->second;
     }
 

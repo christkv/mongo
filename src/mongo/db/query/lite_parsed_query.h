@@ -48,6 +48,8 @@ namespace mongo {
                            const BSONObj& proj,
                            const BSONObj& sort,
                            const BSONObj& hint,
+                           const BSONObj& minObj,
+                           const BSONObj& maxObj,
                            LiteParsedQuery** out);
 
         /**
@@ -64,16 +66,22 @@ namespace mongo {
 
         /**
          * Helper function to identify text search sort key
-         * Example: {a: {$meta: "text"}}
+         * Example: {a: {$meta: "textScore"}}
          */
-        static bool isTextMeta(BSONElement elt);
+        static bool isTextScoreMeta(BSONElement elt);
+
+        /**
+         * Helper function to identify diskLoc projection
+         * Example: {a: {$meta: "diskloc"}}.
+         */
+        static bool isDiskLocMeta(BSONElement elt);
 
         /**
          * Helper function to validate a sort object.
          * Returns true if each element satisfies one of:
          * 1. a number with value 1
          * 2. a number with value -1
-         * 3. isTextMeta
+         * 3. isTextScoreMeta
          */
         static bool isValidSortOrder(const BSONObj& sortObj);
 
@@ -82,15 +90,20 @@ namespace mongo {
          * Each element of the object returned satisfies one of:
          * 1. a number with value 1
          * 2. a number with value -1
-         * 3. isTextMeta
+         * 3. isTextScoreMeta
          */
         static BSONObj normalizeSortOrder(const BSONObj& sortObj);
 
-        // Name of the maxTimeMS command option.
+        // Names of the maxTimeMS command and query option.
         static const string cmdOptionMaxTimeMS;
-
-        // Name of the maxTimeMS query option.
         static const string queryOptionMaxTimeMS;
+
+        // Names of the $meta projection values.
+        static const string metaTextScore;
+        static const string metaGeoNearDistance;
+        static const string metaGeoNearPoint;
+        static const string metaDiskLoc;
+        static const string metaIndexKey;
 
         const string& ns() const { return _ns; }
         bool isLocalDB() const { return _ns.compare(0, 6, "local.") == 0; }

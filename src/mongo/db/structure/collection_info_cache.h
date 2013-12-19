@@ -30,9 +30,10 @@
 
 #pragma once
 
-#include "mongo/db/index_set.h"
-#include "mongo/db/querypattern.h"
+#include <boost/scoped_ptr.hpp>
 
+#include "mongo/db/index_set.h"
+#include "mongo/db/query/plan_cache.h"
 
 namespace mongo {
 
@@ -52,6 +53,15 @@ namespace mongo {
          */
         void reset();
 
+        //
+        // New Query Execution
+        //
+
+        /**
+         * Get the PlanCache for this collection.
+         */
+        PlanCache* getPlanCache() const;
+
         // -------------------
 
         /* get set of index keys for this namespace.  handy to quickly check if a given
@@ -65,17 +75,15 @@ namespace mongo {
 
         // ---------------------
 
+        /**
+         * Called when an index is added to this collection.
+         */
         void addedIndex() { reset(); }
 
         void clearQueryCache();
 
         /* you must notify the cache if you are doing writes, as query plan utility will change */
         void notifyOfWriteOp();
-
-        CachedQueryPlan cachedQueryPlanForPattern( const QueryPattern &pattern );
-
-        void registerCachedQueryPlanForPattern( const QueryPattern &pattern,
-                                                const CachedQueryPlan &cachedQueryPlan );
 
     private:
 
@@ -85,16 +93,10 @@ namespace mongo {
         bool _keysComputed;
         IndexPathSet _indexedPaths;
 
+        // A cache for query plans.
+        boost::scoped_ptr<PlanCache> _planCache;
+
         void computeIndexKeys();
-
-        // --- for old query optimizer
-
-        void _clearQueryCache_inlock();
-
-        mutex _qcCacheMutex;
-        int _qcWriteCount;
-        std::map<QueryPattern,CachedQueryPlan> _qcCache;
-
     };
 
-}
+}  // namespace mongo

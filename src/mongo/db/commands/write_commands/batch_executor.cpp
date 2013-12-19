@@ -39,12 +39,13 @@
 #include "mongo/db/ops/update.h"
 #include "mongo/db/ops/update_lifecycle_impl.h"
 #include "mongo/db/pagefault.h"
+#include "mongo/db/repl/replication_server_status.h"
 #include "mongo/db/stats/counters.h"
 #include "mongo/db/write_concern.h"
 #include "mongo/s/collection_metadata.h"
 #include "mongo/s/d_logic.h"
 #include "mongo/s/shard_key_pattern.h"
-#include "mongo/s/write_ops/batched_error_detail.h"
+#include "mongo/s/write_ops/write_error_detail.h"
 #include "mongo/s/write_ops/batched_upsert_detail.h"
 #include "mongo/util/mongoutils/str.h"
 
@@ -59,27 +60,28 @@ namespace mongo {
         : _defaultWriteConcern(wc), _client( client ), _opCounters( opCounters ), _le( le ) {
     }
 
-    static void maybeBuildWCError( const BSONObj& wcResult,
-                                   const string& wcErrMsg,
+    static void maybeBuildWCError( const Status& wcStatus,
+                                   const WriteConcernResult& wcResult,
                                    BatchedCommandResponse* response ) {
 
         // Error reported is either the errmsg or err from wc
         string errMsg;
-        if ( !wcErrMsg.empty() ) errMsg = wcErrMsg;
-        else if ( wcResult["err"].type() == String ) errMsg = wcResult["err"].String();
+        if ( !wcStatus.isOK() )
+            errMsg = wcStatus.toString();
+        else if ( wcResult.err.size() )
+            errMsg = wcResult.err;
 
-        // Sometimes the jnote/wnote has more error info
-        if ( !errMsg.empty() && wcResult["jnote"].type() == String ) {
-            errMsg = wcResult["jnote"].String();
-        }
-        if ( !errMsg.empty() && wcResult["wnote"].type() == String ) {
-            errMsg = wcResult["wnote"].String();
-        }
+        if ( errMsg.empty() )
+            return;
 
-        if ( errMsg.empty() ) return;
+        if ( wcStatus.isOK() )
+            response->setErrCode( ErrorCodes::WriteConcernFailed );
+        else
+            response->setErrCode( wcStatus.code() );
 
-        response->setErrCode( ErrorCodes::WriteConcernFailed );
-        if ( wcResult["wtimeout"].trueValue() ) response->setErrInfo( BSON( "wtimeout" << true ) );
+        if ( wcResult.wTimedOut )
+            response->setErrInfo( BSON( "wtimeout" << true ) );
+
         response->setErrMessage( errMsg );
     }
 
@@ -89,7 +91,7 @@ namespace mongo {
         Timer commandTimer;
 
         WriteStats stats;
-        std::auto_ptr<BatchedErrorDetail> error( new BatchedErrorDetail );
+        std::auto_ptr<WriteErrorDetail> error( new WriteErrorDetail );
         bool verbose = request.isVerboseWC();
 
         // Apply each batch item, stopping on an error if we were asked to apply the batch
@@ -138,7 +140,7 @@ namespace mongo {
 
                 if ( request.getOrdered() ) break;
 
-                error.reset( new BatchedErrorDetail );
+                error.reset( new WriteErrorDetail );
             }
         }
 
@@ -158,7 +160,7 @@ namespace mongo {
             }
             else {
                 // Promote the single error.
-                const BatchedErrorDetail* error = response->getErrDetailsAt( 0 );
+                const WriteErrorDetail* error = response->getErrDetailsAt( 0 );
                 response->setErrCode( error->getErrCode() );
                 if ( error->isErrInfoSet() ) response->setErrInfo( error->getErrInfo() );
                 response->setErrMessage( error->getErrMessage() );
@@ -167,26 +169,34 @@ namespace mongo {
             }
         }
 
+        // Send opTime in response
+        if ( anyReplEnabled() )
+            response->setLastOp( _client->getLastOp().asDate() );
+
         // Apply write concern if we had any successful writes
         if ( numItemErrors < numBatchItems ) {
 
-            BSONObj writeConcern;
+            WriteConcernOptions writeConcern;
+            Status status = Status::OK();
             if ( request.isWriteConcernSet() ) {
-                writeConcern = request.getWriteConcern();
+                status = writeConcern.parse( request.getWriteConcern() );
             }
             else {
-                writeConcern = _defaultWriteConcern;
+                status = writeConcern.parse( _defaultWriteConcern );
             }
 
-            string errMsg;
-            BSONObjBuilder wcResultsB;
-            waitForWriteConcern( writeConcern,
-                                 false /* always wait for secondaries since we wrote something */,
-                                 &wcResultsB,
-                                 &errMsg );
+            if ( !status.isOK() ) {
+                response->setErrCode( ErrorCodes::WriteConcernFailed );
+                response->setErrMessage( status.toString() );
+            }
+            else {
 
-            maybeBuildWCError( wcResultsB.obj(), errMsg, response );
-            // TODO: save writtenTo, waitedJournal/waitedRepl stats
+                _client->curop()->setMessage( "waiting for write concern" );
+
+                WriteConcernResult res;
+                status = waitForWriteConcern( writeConcern, _client->getLastOp(), &res );
+                maybeBuildWCError( status, res, response );
+            }
         }
 
         // Set the main body of the response. We assume that, if there was an error, the error
@@ -194,18 +204,22 @@ namespace mongo {
         response->setOk( !response->isErrCodeSet() );
         response->setN( stats.numInserted + stats.numUpserted + stats.numUpdated
                         + stats.numDeleted );
+        response->setNDocsModified(stats.numModified);
         dassert( response->isValid( NULL ) );
 
         // TODO: Audit where we want to queue here - the shardingState calls may block for remote
         // data
         if ( staleBatch ) {
 
+            const BatchedRequestMetadata* requestMetadata = request.getMetadata();
+            dassert( requestMetadata );
+
             // Make sure our shard name is set or is the same as what was set previously
-            if ( !shardingState.setShardName( request.getShardName() ) ) {
+            if ( !shardingState.setShardName( requestMetadata->getShardName() ) ) {
 
                 // If our shard name is stale, our version must have been stale as well
                 dassert( numItemErrors == numBatchItems );
-                warning() << "shard name " << request.getShardName()
+                warning() << "shard name " << requestMetadata->getShardName()
                           << " in batch does not match previously-set shard name "
                           << shardingState.getShardName() << ", not reloading metadata" << endl;
             }
@@ -213,7 +227,7 @@ namespace mongo {
                 // Refresh our shard version
                 ChunkVersion latestShardVersion;
                 shardingState.refreshMetadataIfNeeded( request.getTargetingNS(),
-                                                       request.getShardVersion(),
+                                                       requestMetadata->getShardVersion(),
                                                        &latestShardVersion );
             }
         }
@@ -241,7 +255,7 @@ namespace mongo {
     bool WriteBatchExecutor::applyWriteItem( const BatchItemRef& itemRef,
                                              WriteStats* stats,
                                              BSONObj* upsertedID,
-                                             BatchedErrorDetail* error ) {
+                                             WriteErrorDetail* error ) {
         const BatchedCommandRequest& request = *itemRef.getRequest();
         const string& ns = request.getNS();
 
@@ -309,7 +323,7 @@ namespace mongo {
         return opSuccess;
     }
 
-    static void toBatchedError( const UserException& ex, BatchedErrorDetail* error ) {
+    static void toBatchedError( const UserException& ex, WriteErrorDetail* error ) {
         // TODO: Complex transform here?
         error->setErrCode( ex.getCode() );
         error->setErrMessage( ex.what() );
@@ -317,7 +331,7 @@ namespace mongo {
 
     static void buildStaleError( const ChunkVersion& shardVersionRecvd,
                                  const ChunkVersion& shardVersionWanted,
-                                 BatchedErrorDetail* error ) {
+                                 WriteErrorDetail* error ) {
 
         // Write stale error to results
         error->setErrCode( ErrorCodes::StaleShardVersion );
@@ -334,7 +348,7 @@ namespace mongo {
 
     static void buildUniqueIndexError( const BSONObj& keyPattern,
                                        const BSONObj& indexPattern,
-                                       BatchedErrorDetail* error ) {
+                                       WriteErrorDetail* error ) {
         error->setErrCode( ErrorCodes::CannotCreateIndex );
         string errMsg = stream() << "cannot create unique index over " << indexPattern
                                  << " with shard key pattern " << keyPattern;
@@ -346,7 +360,7 @@ namespace mongo {
                                       CurOp* currentOp,
                                       WriteStats* stats,
                                       BSONObj* upsertedID,
-                                      BatchedErrorDetail* error ) {
+                                      WriteErrorDetail* error ) {
 
         const BatchedCommandRequest& request = *itemRef.getRequest();
         int index = itemRef.getItemIndex();
@@ -363,16 +377,19 @@ namespace mongo {
             Lock::assertWriteLocked( targetingNS );
             metadata = shardingState.getCollectionMetadata( targetingNS );
 
-            if ( request.isShardVersionSet()
-                 && !ChunkVersion::isIgnoredVersion( request.getShardVersion() ) ) {
+            const BatchedRequestMetadata* requestMetadata = request.getMetadata();
+
+            if ( requestMetadata &&
+                    requestMetadata->isShardVersionSet() &&
+                    !ChunkVersion::isIgnoredVersion( requestMetadata->getShardVersion() ) ) {
 
                 ChunkVersion shardVersion =
                     metadata ? metadata->getShardVersion() : ChunkVersion::UNSHARDED();
 
-                if ( !request.getShardVersion() //
+                if ( !requestMetadata->getShardVersion() //
                     .isWriteCompatibleWith( shardVersion ) ) {
 
-                    buildStaleError( request.getShardVersion(), shardVersion, error );
+                    buildStaleError( requestMetadata->getShardVersion(), shardVersion, error );
                     return false;
                 }
             }
@@ -432,7 +449,7 @@ namespace mongo {
                                        const BSONObj& insertOp,
                                        CurOp* currentOp,
                                        WriteStats* stats,
-                                       BatchedErrorDetail* error ) {
+                                       WriteErrorDetail* error ) {
         OpDebug& opDebug = currentOp->debug();
 
         _opCounters->gotInsert();
@@ -464,7 +481,7 @@ namespace mongo {
                                        CurOp* currentOp,
                                        WriteStats* stats,
                                        BSONObj* upsertedID,
-                                       BatchedErrorDetail* error ) {
+                                       WriteErrorDetail* error ) {
         OpDebug& opDebug = currentOp->debug();
 
         _opCounters->gotUpdate();
@@ -479,7 +496,9 @@ namespace mongo {
         opDebug.query = queryObj;
 
         bool updateExisting = false;
-        long long numUpdated = 0;
+        bool didInsert = false;
+        long long numMatched = 0;
+        long long numDocsModified = 0;
         BSONObj resUpsertedID;
         try {
 
@@ -497,12 +516,17 @@ namespace mongo {
 
             UpdateResult res = update( request, &opDebug );
 
+            numDocsModified = res.numDocsModified;
             updateExisting = res.existing;
-            numUpdated = res.numMatched;
+            numMatched = res.numMatched;
             resUpsertedID = res.upserted;
 
-            stats->numUpdated += resUpsertedID.isEmpty() ? numUpdated : 0;
-            stats->numUpserted += !resUpsertedID.isEmpty() ? 1 : 0;
+            // We have an _id from an insert
+            didInsert = !resUpsertedID.isEmpty();
+
+            stats->numModified += didInsert ? 0 : numDocsModified;
+            stats->numUpdated += didInsert ? 0 : numMatched;
+            stats->numUpserted += didInsert ? 1 : 0;
         }
         catch ( const UserException& ex ) {
             opDebug.exceptionInfo = ex.getInfo();
@@ -510,9 +534,9 @@ namespace mongo {
             return false;
         }
 
-        _le->recordUpdate( updateExisting, numUpdated, resUpsertedID );
+        _le->recordUpdate( updateExisting, numMatched, resUpsertedID );
 
-        if (!resUpsertedID.isEmpty()) {
+        if (didInsert) {
             *upsertedID = resUpsertedID;
         }
 
@@ -523,7 +547,7 @@ namespace mongo {
                                        const BatchedDeleteDocument& deleteOp,
                                        CurOp* currentOp,
                                        WriteStats* stats,
-                                       BatchedErrorDetail* error ) {
+                                       WriteErrorDetail* error ) {
         OpDebug& opDebug = currentOp->debug();
 
         _opCounters->gotDelete();

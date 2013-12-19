@@ -65,8 +65,6 @@ namespace mongo {
         addIndent(ss, indent);
         *ss << "TEXT\n";
         addIndent(ss, indent + 1);
-        *ss << "numWanted = " << _numWanted << endl;
-        addIndent(ss, indent + 1);
         *ss << "keyPattern = " << _indexKeyPattern.toString() << endl;
         addIndent(ss, indent + 1);
         *ss << "query = " << _query << endl;
@@ -79,7 +77,7 @@ namespace mongo {
     // CollectionScanNode
     //
 
-    CollectionScanNode::CollectionScanNode() : tailable(false), direction(1) { }
+    CollectionScanNode::CollectionScanNode() : tailable(false), direction(1), maxScan(0) { }
 
     void CollectionScanNode::appendToString(stringstream* ss, int indent) const {
         addIndent(ss, indent);
@@ -309,7 +307,7 @@ namespace mongo {
     //
 
     IndexScanNode::IndexScanNode()
-        : indexIsMultiKey(false), limit(0), direction(1) { }
+        : indexIsMultiKey(false), limit(0), direction(1), maxScan(0), addKeyMetadata(false) { }
 
     void IndexScanNode::appendToString(stringstream* ss, int indent) const {
         addIndent(ss, indent);
@@ -485,6 +483,8 @@ namespace mongo {
         *ss << "pattern = " << pattern.toString() << endl;
         addIndent(ss, indent + 1);
         *ss << "query for bounds = " << query.toString() << endl;
+        addIndent(ss, indent + 1);
+        *ss << "limit = " << limit << endl;
         addCommon(ss, indent);
         *ss << "Child:" << endl;
         children[0]->appendToString(ss, indent + 2);

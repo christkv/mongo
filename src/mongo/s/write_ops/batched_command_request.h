@@ -12,6 +12,18 @@
  *
  *    You should have received a copy of the GNU Affero General Public License
  *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ *    As a special exception, the copyright holders give permission to link the
+ *    code of portions of this program with the OpenSSL library under certain
+ *    conditions as described in each individual source file and distribute
+ *    linked combinations including the program with the OpenSSL library. You
+ *    must comply with the GNU Affero General Public License in all respects
+ *    for all of the code used other than as permitted herein. If you modify
+ *    file(s) with this exception, you may extend this exception to your
+ *    version of the file(s), but you are not obligated to do so. If you do not
+ *    wish to do so, delete this exception statement from your version. If you
+ *    delete this exception statement from all source files in the program,
+ *    then also delete it in the license file.
  */
 
 #pragma once
@@ -45,12 +57,23 @@ namespace mongo {
 
         BatchedCommandRequest( BatchType batchType );
 
+        /**
+         * insertReq ownership is transferred to here.
+         */
         BatchedCommandRequest( BatchedInsertRequest* insertReq ) :
                 _batchType( BatchType_Insert ), _insertReq( insertReq ) {
         }
+
+        /**
+         * updateReq ownership is transferred to here.
+         */
         BatchedCommandRequest( BatchedUpdateRequest* updateReq ) :
                 _batchType( BatchType_Update ), _updateReq( updateReq ) {
         }
+
+        /**
+         * deleteReq ownership is transferred to here.
+         */
         BatchedCommandRequest( BatchedDeleteRequest* deleteReq ) :
                 _batchType( BatchType_Delete ), _deleteReq( deleteReq ) {
         }
@@ -116,20 +139,8 @@ namespace mongo {
         bool isOrderedSet() const;
         bool getOrdered() const;
 
-        void setShardName(const StringData& shardName);
-        void unsetShardName();
-        bool isShardNameSet() const;
-        const std::string& getShardName() const;
-
-        void setShardVersion( const ChunkVersion& shardVersion );
-        void unsetShardVersion();
-        bool isShardVersionSet() const;
-        const ChunkVersion& getShardVersion() const;
-
-        void setSession( long long session );
-        void unsetSession();
-        bool isSessionSet() const;
-        long long getSession() const;
+        BatchedRequestMetadata* getMetadata() const;
+        void setMetadata(BatchedRequestMetadata* metadata);
 
         //
         // Helpers for auth pre-parsing

@@ -159,14 +159,20 @@ namespace mongo {
             res->setIndexOnly(false);
         }
         else if (leaf->stageType == STAGE_GEO_NEAR_2D) {
-            // TODO: This is kind of a lie.
+            TwoDNearStats* nStats = static_cast<TwoDNearStats*>(leaf->specific.get());
             res->setCursor("GeoSearchCursor");
             // The first work() is an init.  Every subsequent work examines a document.
-            res->setNScanned(leaf->common.works);
-            res->setNScannedObjects(leaf->common.works);
+            res->setNScanned(nStats->nscanned);
+            res->setNScannedObjects(nStats->objectsLoaded);
             // TODO: Could be multikey.
             res->setIsMultiKey(false);
             res->setIndexOnly(false);
+        }
+        else if (leaf->stageType == STAGE_TEXT) {
+            TextStats* tStats = static_cast<TextStats*>(leaf->specific.get());
+            res->setCursor("TextCursor");
+            res->setNScanned(tStats->keysExamined);
+            res->setNScannedObjects(tStats->fetches);
         }
         else if (leaf->stageType == STAGE_IXSCAN) {
             IndexScanStats* indexStats = static_cast<IndexScanStats*>(leaf->specific.get());

@@ -94,6 +94,39 @@ namespace mongo {
         return query.extractFieldsUnDotted(keyPattern);
     }
 
+    static bool indexCompatibleMaxMin(const BSONObj& obj, const BSONObj& keyPattern) {
+        BSONObjIterator kpIt(keyPattern);
+        BSONObjIterator objIt(obj);
+
+        for (;;) {
+            // Every element up to this point has matched so the KP matches
+            if (!kpIt.more() && !objIt.more()) {
+                return true;
+            }
+
+            // If only one iterator is done, it's not a match.
+            if (!kpIt.more() || !objIt.more()) {
+                return false;
+            }
+
+            // Field names must match and be in the same order.
+            BSONElement kpElt = kpIt.next();
+            BSONElement objElt = objIt.next();
+            if (!mongoutils::str::equals(kpElt.fieldName(), objElt.fieldName())) {
+                return false;
+            }
+        }
+    }
+
+    static BSONObj stripFieldNames(const BSONObj& obj) {
+        BSONObjIterator it(obj);
+        BSONObjBuilder bob;
+        while (it.more()) {
+            bob.appendAs(it.next(), "");
+        }
+        return bob.obj();
+    }
+
     QuerySolution* buildCollscanSoln(const CanonicalQuery& query,
                                      bool tailable,
                                      const QueryPlannerParams& params) {
@@ -128,9 +161,42 @@ namespace mongo {
     }
 
     // static
-    void QueryPlanner::plan(const CanonicalQuery& query,
-                            const QueryPlannerParams& params,
-                            vector<QuerySolution*>* out) {
+    Status QueryPlanner::planFromCache(const CanonicalQuery& query,
+                                       const QueryPlannerParams& params,
+                                       CachedSolution* cachedSoln,
+                                       QuerySolution** out) {
+
+        // Create a copy of the expression tree.  We use cachedSoln to annotate this with indices.
+        MatchExpression* clone = query.root()->shallowClone();
+
+        // XXX: Use data in cachedSoln to tag 'clone' with the indices used.  The tags use an index
+        // ID which is an index into some vector of IndexEntry(s).  How do we maintain this across
+        // calls to plan?  Do we want to store in the soln the keypatterns of the indices and just
+        // map those to an index into params.indices?  Might be easiest thing to do, and certainly
+        // most intelligible for debugging.
+
+        // Use the cached index assignments to build solnRoot.  Takes ownership of clone.
+        QuerySolutionNode* solnRoot =
+            QueryPlannerAccess::buildIndexedDataAccess(query, clone, false, params.indices);
+
+        // XXX: are the NULL cases an error/when does this happen / can this happen?
+        if (NULL != solnRoot) {
+            QuerySolution* soln = QueryPlannerAnalysis::analyzeDataAccess(query, params, solnRoot);
+            if (NULL != soln) {
+                QLOG() << "Planner: adding cached solution:\n" << soln->toString() << endl;
+                *out = soln;
+            }
+        }
+
+        // XXX: if any NULLs return error status?
+        return Status::OK();
+    }
+
+    // static
+    Status QueryPlanner::plan(const CanonicalQuery& query,
+                              const QueryPlannerParams& params,
+                              std::vector<QuerySolution*>* out) {
+
         QLOG() << "=============================\n"
                << "Beginning planning, options = " << optionString(params.options) << endl
                << "Canonical query:\n" << query.toString() << endl
@@ -155,7 +221,7 @@ namespace mongo {
                     out->push_back(soln);
                 }
             }
-            return;
+            return Status::OK();
         }
 
         // The hint can be $natural: 1.  If this happens, output a collscan.  It's a weird way of
@@ -164,35 +230,16 @@ namespace mongo {
             BSONElement natural = query.getParsed().getHint().getFieldDotted("$natural");
             if (!natural.eoo()) {
                 QLOG() << "forcing a table scan due to hinted $natural\n";
-                if (canTableScan) {
+                // min/max are incompatible with $natural.
+                if (canTableScan && query.getParsed().getMin().isEmpty()
+                                 && query.getParsed().getMax().isEmpty()) {
                     QuerySolution* soln = buildCollscanSoln(query, false, params);
                     if (NULL != soln) {
                         out->push_back(soln);
                     }
                 }
-                return;
+                return Status::OK();
             }
-        }
-
-        // NOR and NOT we can't handle well with indices.  If we see them here, they weren't
-        // rewritten to remove the negation.  Just output a collscan for those.
-        if (QueryPlannerCommon::hasNode(query.root(), MatchExpression::NOT)
-            || QueryPlannerCommon::hasNode(query.root(), MatchExpression::NOR)) {
-
-            // If there's a near predicate, we can't handle this.
-            // TODO: Should canonicalized query detect this?
-            if (QueryPlannerCommon::hasNode(query.root(), MatchExpression::GEO_NEAR)) {
-                warning() << "Can't handle NOT/NOR with GEO_NEAR";
-                return;
-            }
-            QLOG() << "NOT/NOR in plan, just outtping a collscan\n";
-            if (canTableScan) {
-                QuerySolution* soln = buildCollscanSoln(query, false, params);
-                if (NULL != soln) {
-                    out->push_back(soln);
-                }
-            }
-            return;
         }
 
         // Figure out what fields we care about.
@@ -223,7 +270,10 @@ namespace mongo {
 
         size_t hintIndexNumber = numeric_limits<size_t>::max();
 
-        if (!hintIndex.isEmpty()) {
+        if (hintIndex.isEmpty()) {
+            QueryPlannerIXSelect::findRelevantIndices(fields, params.indices, &relevantIndices);
+        }
+        else {
             // Sigh.  If the hint is specified it might be using the index name.
             BSONElement firstHintElt = hintIndex.firstElement();
             if (str::equals("$hint", firstHintElt.fieldName()) && String == firstHintElt.type()) {
@@ -256,12 +306,88 @@ namespace mongo {
             if (hintIndexNumber == numeric_limits<size_t>::max()) {
                 // This is supposed to be an error.
                 warning() << "Can't find hint for " << hintIndex.toString();
-                return;
+                return Status(ErrorCodes::BadValue, "bad hint");
             }
         }
-        else {
-            QLOG() << "Finding relevant indices\n";
-            QueryPlannerIXSelect::findRelevantIndices(fields, params.indices, &relevantIndices);
+
+        // Deal with the .min() and .max() query options.  If either exist we can only use an index
+        // that matches the object inside.
+        if (!query.getParsed().getMin().isEmpty() || !query.getParsed().getMax().isEmpty()) {
+            BSONObj minObj = query.getParsed().getMin();
+            BSONObj maxObj = query.getParsed().getMax();
+
+            // This is the index into params.indices[...] that we use.
+            size_t idxNo = numeric_limits<size_t>::max();
+
+            // If there's an index hinted we need to be able to use it.
+            if (!hintIndex.isEmpty()) {
+                if (!minObj.isEmpty() && !indexCompatibleMaxMin(minObj, hintIndex)) {
+                    QLOG() << "minobj doesnt work w hint";
+                    return Status(ErrorCodes::BadValue,
+                                  "hint provided does not work with min query");
+                }
+
+                if (!maxObj.isEmpty() && !indexCompatibleMaxMin(maxObj, hintIndex)) {
+                    QLOG() << "maxobj doesnt work w hint";
+                    return Status(ErrorCodes::BadValue,
+                                  "hint provided does not work with max query");
+                }
+
+                idxNo = hintIndexNumber;
+            }
+            else {
+                // No hinted index, look for one that is compatible (has same field names and
+                // ordering thereof).
+                for (size_t i = 0; i < params.indices.size(); ++i) {
+                    const BSONObj& kp = params.indices[i].keyPattern;
+
+                    BSONObj toUse = minObj.isEmpty() ? maxObj : minObj;
+                    if (indexCompatibleMaxMin(toUse, kp)) {
+                        idxNo = i;
+                        break;
+                    }
+                }
+            }
+            
+            if (idxNo == numeric_limits<size_t>::max()) {
+                QLOG() << "Can't find relevant index to use for max/min query";
+                // Can't find an index to use, bail out.
+                return Status(ErrorCodes::BadValue,
+                              "unable to find relevant index for max/min query");
+            }
+
+            // maxObj can be empty; the index scan just goes until the end.  minObj can't be empty
+            // though, so if it is, we make a minKey object.
+            if (minObj.isEmpty()) {
+                BSONObjBuilder bob;
+                bob.appendMinKey("");
+                minObj = bob.obj();
+            }
+            else {
+                // Must strip off the field names to make an index key.
+                minObj = stripFieldNames(minObj);
+            }
+
+            if (!maxObj.isEmpty()) {
+                // Must strip off the field names to make an index key.
+                maxObj = stripFieldNames(maxObj);
+            }
+
+            QLOG() << "max/min query using index " << params.indices[idxNo].toString() << endl;
+
+            // Make our scan and output.
+            QuerySolutionNode* solnRoot = QueryPlannerAccess::makeIndexScan(params.indices[idxNo],
+                                                                            query,
+                                                                            params,
+                                                                            minObj,
+                                                                            maxObj);
+
+            QuerySolution* soln = QueryPlannerAnalysis::analyzeDataAccess(query, params, solnRoot);
+            if (NULL != soln) {
+                out->push_back(soln);
+            }
+
+            return Status::OK();
         }
 
         for (size_t i = 0; i < relevantIndices.size(); ++i) {
@@ -282,7 +408,8 @@ namespace mongo {
             // No index for GEO_NEAR?  No query.
             RelevantTag* tag = static_cast<RelevantTag*>(gnNode->getTag());
             if (0 == tag->first.size() && 0 == tag->notFirst.size()) {
-                return;
+                QLOG() << "unable to find index for $geoNear query" << endl;
+                return Status(ErrorCodes::BadValue, "unable to find index for $geoNear query");
             }
 
             GeoNearMatchExpression* gnme = static_cast<GeoNearMatchExpression*>(gnNode);
@@ -303,6 +430,10 @@ namespace mongo {
 
                 GeoNear2DNode* solnRoot = new GeoNear2DNode();
                 solnRoot->nq = gnme->getData();
+                if (NULL != query.getProj()) {
+                    solnRoot->addPointMeta = query.getProj()->wantGeoNearPoint();
+                    solnRoot->addDistMeta = query.getProj()->wantGeoNearDistance();
+                }
 
                 if (MatchExpression::GEO_NEAR != query.root()->matchType()) {
                     // root is an AND, clone and delete the GEO_NEAR child.
@@ -343,7 +474,7 @@ namespace mongo {
             tag->first.swap(newFirst);
 
             if (0 == tag->first.size() && 0 == tag->notFirst.size()) {
-                return;
+                return Status::OK();
             }
         }
 
@@ -352,7 +483,7 @@ namespace mongo {
         if (QueryPlannerCommon::hasNode(query.root(), MatchExpression::TEXT, &textNode)) {
             RelevantTag* tag = static_cast<RelevantTag*>(textNode->getTag());
             if (0 == tag->first.size() && 0 == tag->notFirst.size()) {
-                return;
+                return Status::OK();
             }
         }
 
@@ -386,19 +517,19 @@ namespace mongo {
         // An index was hinted.  If there are any solutions, they use the hinted index.  If not, we
         // scan the entire index to provide results and output that as our plan.  This is the
         // desired behavior when an index is hinted that is not relevant to the query.
-        if (!hintIndex.isEmpty() && (0 == out->size())) {
-            QuerySolution* soln = buildWholeIXSoln(params.indices[hintIndexNumber], query, params);
-            if (NULL != soln) {
+        if (!hintIndex.isEmpty()) {
+            if (0 == out->size()) {
+                QuerySolution* soln = buildWholeIXSoln(params.indices[hintIndexNumber], query, params);
+                verify(NULL != soln);
                 QLOG() << "Planner: outputting soln that uses hinted index as scan." << endl;
                 out->push_back(soln);
             }
-            return;
+            return Status::OK();
         }
 
         // If a sort order is requested, there may be an index that provides it, even if that
         // index is not over any predicates in the query.
         //
-        // XXX XXX: Can we do this even if the index is sparse?  Might we miss things?
         if (!query.getParsed().getSort().isEmpty()
             && !QueryPlannerCommon::hasNode(query.root(), MatchExpression::GEO_NEAR)
             && !QueryPlannerCommon::hasNode(query.root(), MatchExpression::TEXT)) {
@@ -446,6 +577,7 @@ namespace mongo {
         // XXX: currently disabling the always-use-a-collscan in order to find more planner bugs.
         if (    !QueryPlannerCommon::hasNode(query.root(), MatchExpression::GEO_NEAR)
              && !QueryPlannerCommon::hasNode(query.root(), MatchExpression::TEXT)
+             && hintIndex.isEmpty()
              && ((params.options & QueryPlannerParams::INCLUDE_COLLSCAN) || (0 == out->size() && canTableScan)))
         {
             QuerySolution* collscan = buildCollscanSoln(query, false, params);
@@ -455,6 +587,8 @@ namespace mongo {
                 QLOG() << collscan->toString() << endl;
             }
         }
+
+        return Status::OK();
     }
 
 }  // namespace mongo

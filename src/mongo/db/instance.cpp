@@ -63,11 +63,11 @@
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/ops/count.h"
 #include "mongo/db/ops/delete.h"
-#include "mongo/db/ops/query.h"
 #include "mongo/db/ops/update.h"
 #include "mongo/db/ops/update_lifecycle_impl.h"
 #include "mongo/db/ops/update_driver.h"
 #include "mongo/db/pagefault.h"
+#include "mongo/db/query/new_find.h"
 #include "mongo/db/repl/is_master.h"
 #include "mongo/db/repl/oplog.h"
 #include "mongo/db/stats/counters.h"
@@ -278,7 +278,7 @@ namespace mongo {
                 audit::logQueryAuthzCheck(client, ns, q.query, status.code());
                 uassertStatusOK(status);
             }
-            dbresponse.exhaustNS = runQuery(m, q, op, *resp);
+            dbresponse.exhaustNS = newRunQuery(m, q, op, *resp);
             verify( !resp->empty() );
         }
         catch ( SendStaleConfigException& e ){
@@ -759,13 +759,13 @@ namespace mongo {
                     }
                 }
 
-                msgdata = processGetMore(ns,
-                                         ntoreturn,
-                                         cursorid,
-                                         curop,
-                                         pass,
-                                         exhaust,
-                                         &isCursorAuthorized);
+                msgdata = newGetMore(ns,
+                                     ntoreturn,
+                                     cursorid,
+                                     curop,
+                                     pass,
+                                     exhaust,
+                                     &isCursorAuthorized);
             }
             catch ( AssertionException& e ) {
                 if ( isCursorAuthorized ) {

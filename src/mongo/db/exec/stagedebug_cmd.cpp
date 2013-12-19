@@ -41,7 +41,7 @@
 #include "mongo/db/exec/skip.h"
 #include "mongo/db/exec/sort.h"
 #include "mongo/db/exec/text.h"
-#include "mongo/db/index/catalog_hack.h"
+#include "mongo/db/index/fts_access_method.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/matcher/expression_parser.h"
 #include "mongo/db/namespace_details.h"
@@ -363,7 +363,6 @@ namespace mongo {
                 TextStageParams params(fam->getSpec());
                 params.ns = ns;
                 params.index = index;
-                params.limit = 100;
 
                 // XXX: Deal with non-empty filters.  This is a hack to put in covering information
                 // that can only be checked for equality.  We ignore this now.

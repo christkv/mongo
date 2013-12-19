@@ -33,24 +33,14 @@
 #include "mongo/db/commands.h"
 #include "mongo/db/exec/filter.h"
 #include "mongo/db/exec/oplogstart.h"
-#include "mongo/db/index/catalog_hack.h"
-#include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/keypattern.h"
 #include "mongo/db/kill_current_op.h"
-#include "mongo/db/matcher/expression.h"
-#include "mongo/db/matcher/expression_geo.h"
-#include "mongo/db/query/cached_plan_runner.h"
-#include "mongo/db/query/canonical_query.h"
-#include "mongo/db/query/eof_runner.h"
-#include "mongo/db/query/idhack_runner.h"
+#include "mongo/db/query/find_constants.h"
+#include "mongo/db/query/get_runner.h"
 #include "mongo/db/query/internal_plans.h"
-#include "mongo/db/query/multi_plan_runner.h"
-#include "mongo/db/query/plan_cache.h"
 #include "mongo/db/query/qlog.h"
-#include "mongo/db/query/query_planner.h"
-#include "mongo/db/query/query_planner_common.h"
+#include "mongo/db/query/query_planner_params.h"
 #include "mongo/db/query/single_solution_runner.h"
-#include "mongo/db/query/stage_builder.h"
 #include "mongo/db/query/type_explain.h"
 #include "mongo/db/repl/repl_reads_ok.h"
 #include "mongo/db/server_options.h"
@@ -62,12 +52,12 @@
 #include "mongo/s/stale_exception.h"
 #include "mongo/util/mongoutils/str.h"
 
-namespace {
+namespace mongo {
+    // The .h for this in find_constants.h.
+    const int32_t MaxBytesToReturnToClientAtOnce = 4 * 1024 * 1024;
+}  // namespace mongo
 
-    // Copied from db/ops/query.cpp.  Quote:
-    // We cut off further objects once we cross this threshold; thus, you might get
-    // a little bit more than this, it is a threshold rather than a limit.
-    static const int32_t MaxBytesToReturnToClientAtOnce = 4 * 1024 * 1024;
+namespace {
 
     // TODO: Remove this or use it.
     bool hasIndexSpecifier(const mongo::LiteParsedQuery& pq) {
@@ -87,7 +77,7 @@ namespace {
         if (0 == pq.getNumToReturn()) {
             return (len > 1024 * 1024) || n >= 101;
         }
-        return n >= pq.getNumToReturn() || len > MaxBytesToReturnToClientAtOnce;
+        return n >= pq.getNumToReturn() || len > mongo::MaxBytesToReturnToClientAtOnce;
     }
 
     bool enough(const mongo::LiteParsedQuery& pq, int n) {
@@ -104,212 +94,23 @@ namespace {
 
 namespace mongo {
 
-    // Server parameter
-    MONGO_EXPORT_SERVER_PARAMETER(newQueryFrameworkEnabled, bool, true);
-
-    bool isNewQueryFrameworkEnabled() { return newQueryFrameworkEnabled; }
-    void enableNewQueryFramework() { newQueryFrameworkEnabled = true; }
-
-    // Do we use the old or the new?  I call this the spigot.
-    bool canUseNewSystem(const QueryMessage& qm, CanonicalQuery** cqOut) {
-        // This is a read lock.  We require this because if we're parsing a $where, the
-        // where-specific parsing code assumes we have a lock and creates execution machinery that
-        // requires it.
-        Client::ReadContext ctx(qm.ns);
-
-        CanonicalQuery* cq;
-        Status status = CanonicalQuery::canonicalize(qm, &cq);
-        if (!status.isOK()) { return false; }
-        verify(cq);
-        auto_ptr<CanonicalQuery> scopedCq(cq);
-
-        const LiteParsedQuery& pq = cq->getParsed();
-
-        // We fail to deal well with obscure arguments to .find().
-        if (pq.returnKey() || pq.showDiskLoc() || (0 != pq.getMaxScan()) || !pq.getMin().isEmpty()
-            || !pq.getMax().isEmpty()) {
-            QLOG() << "rejecting wacky query args query\n";
-            return false;
+    // XXX clean up
+    static bool runCommands(const char *ns, BSONObj& jsobj, CurOp& curop, BufBuilder &b, BSONObjBuilder& anObjBuilder, bool fromRepl, int queryOptions) {
+        try {
+            return _runCommands(ns, jsobj, b, anObjBuilder, fromRepl, queryOptions);
         }
+        catch( SendStaleConfigException& ){
+            throw;
+        }
+        catch ( AssertionException& e ) {
+            verify( e.getCode() != SendStaleConfigCode && e.getCode() != RecvStaleConfigCode );
 
-        *cqOut = scopedCq.release();
+            Command::appendCommandStatus(anObjBuilder, e.toStatus());
+            curop.debug().exceptionInfo = e.getInfo();
+        }
+        BSONObj x = anObjBuilder.done();
+        b.appendBuf((void*) x.objdata(), x.objsize());
         return true;
-    }
-
-    // Copied verbatim from queryutil.cpp.
-    static bool isSimpleIdQuery(const BSONObj& query) {
-        // Just one field name.
-        BSONObjIterator it(query);
-        if (!it.more()) { return false; }
-
-        BSONElement elt = it.next();
-        if (it.more()) { return false; }
-
-        // Which is _id...
-        if (strcmp("_id", elt.fieldName()) != 0) {
-            return false;
-        }
-
-        // And not something like { _id : { $gt : ...
-        if (elt.isSimpleType()) { return true; }
-
-        // And if the value is an object...
-        if (elt.type() == Object) {
-            // Can't do this.
-            return elt.Obj().firstElementFieldName()[0] != '$';
-        }
-
-        return false;
-    }
-
-    static bool canUseIDHack(const CanonicalQuery& query) {
-        return !query.getParsed().isExplain()
-            && !query.getParsed().showDiskLoc()
-            && isSimpleIdQuery(query.getParsed().getFilter())
-            && !query.getParsed().hasOption(QueryOption_CursorTailable);
-    }
-
-    /**
-     * For a given query, get a runner.  The runner could be a SingleSolutionRunner, a
-     * CachedQueryRunner, or a MultiPlanRunner, depending on the cache/query solver/etc.
-     */
-    Status getRunner(CanonicalQuery* rawCanonicalQuery, Runner** out, size_t plannerOptions) {
-        verify(rawCanonicalQuery);
-        auto_ptr<CanonicalQuery> canonicalQuery(rawCanonicalQuery);
-
-        // Try to look up a cached solution for the query.
-        // TODO: Can the cache have negative data about a solution?
-        PlanCache* localCache = PlanCache::get(canonicalQuery->ns());
-        if (NULL != localCache) {
-            CachedSolution* cs = localCache->get(*canonicalQuery);
-            if (NULL != cs) {
-                // We have a cached solution.  Hand the canonical query and cached solution off to
-                // the cached plan runner, which takes ownership of both.
-                WorkingSet* ws;
-                PlanStage* root;
-                verify(StageBuilder::build(*cs->solution, &root, &ws));
-                *out = new CachedPlanRunner(canonicalQuery.release(), cs, root, ws);
-                return Status::OK();
-            }
-        }
-
-        // No entry in cache for the query.  We have to solve the query ourself.
-
-        // Get the indices that we could possibly use.
-        Database* db = cc().database();
-        verify( db );
-        Collection* collection = db->getCollection( canonicalQuery->ns() );
-
-        // This can happen as we're called by internal clients as well.
-        if (NULL == collection) {
-            const string& ns = canonicalQuery->ns();
-            *out = new EOFRunner(canonicalQuery.release(), ns);
-            return Status::OK();
-        }
-        verify( collection );
-
-        NamespaceDetails* nsd = collection->details();
-
-        // If we have an _id index we can use the idhack runner.
-        if (canUseIDHack(*canonicalQuery) && (-1 != nsd->findIdIndex())) {
-            *out = new IDHackRunner(collection, canonicalQuery.release());
-            return Status::OK();
-        }
-
-        // If it's not NULL, we may have indices.  Access the catalog and fill out IndexEntry(s)
-        QueryPlannerParams plannerParams;
-        for (int i = 0; i < nsd->getCompletedIndexCount(); ++i) {
-            IndexDescriptor* desc = collection->getIndexCatalog()->getDescriptor( i );
-            plannerParams.indices.push_back(IndexEntry(desc->keyPattern(),
-                                                       desc->isMultikey(),
-                                                       desc->isSparse(),
-                                                       desc->indexName()));
-        }
-
-        // Tailable: If the query requests tailable the collection must be capped.
-        if (canonicalQuery->getParsed().hasOption(QueryOption_CursorTailable)) {
-            if (!nsd->isCapped()) {
-                return Status(ErrorCodes::BadValue,
-                              "tailable cursor requested on non capped collection");
-            }
-
-            // If a sort is specified it must be equal to expectedSort.
-            const BSONObj expectedSort = BSON("$natural" << 1);
-            const BSONObj& actualSort = canonicalQuery->getParsed().getSort();
-            if (!actualSort.isEmpty() && !(actualSort == expectedSort)) {
-                return Status(ErrorCodes::BadValue,
-                              "invalid sort specified for tailable cursor: "
-                              + actualSort.toString());
-            }
-        }
-
-        // Process the planning options.
-        plannerParams.options = plannerOptions;
-        if (storageGlobalParams.noTableScan) {
-            const string& ns = canonicalQuery->ns();
-            // There are certain cases where we ignore this restriction:
-            bool ignore = canonicalQuery->getQueryObj().isEmpty()
-                          || (string::npos != ns.find(".system."))
-                          || (0 == ns.find("local."));
-            if (!ignore) {
-                plannerParams.options |= QueryPlannerParams::NO_TABLE_SCAN;
-            }
-        }
-
-        if (!(plannerParams.options & QueryPlannerParams::NO_TABLE_SCAN)) {
-            plannerParams.options |= QueryPlannerParams::INCLUDE_COLLSCAN;
-        }
-
-        // If the caller wants a shard filter, make sure we're actually sharded.
-        if (plannerParams.options & QueryPlannerParams::INCLUDE_SHARD_FILTER) {
-            CollectionMetadataPtr collMetadata = shardingState.getCollectionMetadata(canonicalQuery->ns());
-            if (collMetadata) {
-                plannerParams.shardKey = collMetadata->getKeyPattern();
-            }
-            else {
-                // If there's no metadata don't bother w/the shard filter since we won't know what
-                // the key pattern is anyway...
-                plannerParams.options &= ~QueryPlannerParams::INCLUDE_SHARD_FILTER;
-            }
-        }
-
-        vector<QuerySolution*> solutions;
-        QueryPlanner::plan(*canonicalQuery, plannerParams, &solutions);
-
-        /*
-        for (size_t i = 0; i < solutions.size(); ++i) {
-            QLOG() << "solution " << i << " is " << solutions[i]->toString() << endl;
-        }
-        */
-
-        // We cannot figure out how to answer the query.  Should this ever happen?
-        if (0 == solutions.size()) {
-            return Status(ErrorCodes::BadValue, "No query solutions");
-        }
-
-        if (1 == solutions.size()) {
-            // Only one possible plan.  Run it.  Build the stages from the solution.
-            WorkingSet* ws;
-            PlanStage* root;
-            verify(StageBuilder::build(*solutions[0], &root, &ws));
-
-            // And, run the plan.
-            *out = new SingleSolutionRunner(canonicalQuery.release(), solutions[0], root, ws);
-            return Status::OK();
-        }
-        else {
-            // Many solutions.  Let the MultiPlanRunner pick the best, update the cache, and so on.
-            auto_ptr<MultiPlanRunner> mpr(new MultiPlanRunner(canonicalQuery.release()));
-            for (size_t i = 0; i < solutions.size(); ++i) {
-                WorkingSet* ws;
-                PlanStage* root;
-                verify(StageBuilder::build(*solutions[i], &root, &ws));
-                // Takes ownership of all arguments.
-                mpr->addPlan(solutions[i], root, ws);
-            }
-            *out = mpr.release();
-            return Status::OK();
-        }
     }
 
     /**
@@ -323,8 +124,8 @@ namespace mongo {
         BufBuilder bb(bufSize);
         bb.skip(sizeof(QueryResult));
 
-        // This is a read lock.  TODO: There is a cursor flag for not needing this.  Do we care?
-        Client::ReadContext ctx(ns);
+        // This is a read lock.
+        scoped_ptr<Client::ReadContext> ctx(new Client::ReadContext(ns));
 
         QLOG() << "running getMore in new system, cursorid " << cursorid << endl;
 
@@ -369,6 +170,11 @@ namespace mongo {
 
             // TODO: What is pass?
             if (0 == pass) { cc->updateSlaveLocation(curop); }
+
+            if (cc->isAggCursor) {
+                // Agg cursors handle their own locking internally.
+                ctx.reset(); // unlocks
+            }
 
             CollectionMetadataPtr collMetadata = cc->getCollMetadata();
 
@@ -520,24 +326,74 @@ namespace mongo {
         return Status::OK();
     }
 
-    /**
-     * This is called by db/ops/query.cpp.  This is the entry point for answering a query.
-     */
-    std::string newRunQuery(CanonicalQuery* cq, CurOp& curop, Message &result) {
-        QLOG() << "Running query on new system: " << cq->toString();
+    std::string newRunQuery(Message& m, QueryMessage& q, CurOp& curop, Message &result) {
+        // Validate the namespace.
+        const char *ns = q.ns;
+        uassert(16332, "can't have an empty ns", ns[0]);
 
-        // This is a read lock.
-        Client::ReadContext ctx(cq->ns(), storageGlobalParams.dbpath);
+        const NamespaceString nsString(ns);
+        uassert(16256, str::stream() << "Invalid ns [" << ns << "]", nsString.isValid());
+
+        // Set curop information.
+        curop.debug().ns = ns;
+        curop.debug().ntoreturn = q.ntoreturn;
+        curop.debug().query = q.query;
+        curop.setQuery(q.query);
+
+        // If the query is really a command, run it.
+        if (nsString.isCommand()) {
+            int nToReturn = q.ntoreturn;
+            uassert(16979, str::stream() << "bad numberToReturn (" << nToReturn
+                                         << ") for $cmd type ns - can only be 1 or -1",
+                    nToReturn == 1 || nToReturn == -1);
+
+            curop.markCommand();
+
+            BufBuilder bb;
+            bb.skip(sizeof(QueryResult));
+
+            BSONObjBuilder cmdResBuf;
+            if (!runCommands(ns, q.query, curop, bb, cmdResBuf, false, q.queryOptions)) {
+                uasserted(13530, "bad or malformed command request?");
+            }
+
+            curop.debug().iscommand = true;
+            // TODO: Does this get overwritten/do we really need to set this twice?
+            curop.debug().query = q.query;
+
+            QueryResult* qr = reinterpret_cast<QueryResult*>(bb.buf());
+            bb.decouple();
+            qr->setResultFlagsToOk();
+            qr->len = bb.len();
+            curop.debug().responseLength = bb.len();
+            qr->setOperation(opReply);
+            qr->cursorId = 0;
+            qr->startingFrom = 0;
+            qr->nReturned = 1;
+            result.setData(qr, true);
+            return "";
+        }
+
+        // This is a read lock.  We require this because if we're parsing a $where, the
+        // where-specific parsing code assumes we have a lock and creates execution machinery that
+        // requires it.
+        Client::ReadContext ctx(q.ns);
+
+        // Parse the qm into a CanonicalQuery.
+        CanonicalQuery* cq;
+        Status canonStatus = CanonicalQuery::canonicalize(q, &cq);
+        if (!canonStatus.isOK()) {
+            uasserted(17287, str::stream() << "Can't canonicalize query: " << canonStatus.toString());
+        }
+        verify(cq);
+
+        QLOG() << "Running query on new system: " << cq->toString();
 
         // Parse, canonicalize, plan, transcribe, and get a runner.
         Runner* rawRunner = NULL;
 
         // We use this a lot below.
         const LiteParsedQuery& pq = cq->getParsed();
-
-        // Need to call cq->toString() now, since upon error getRunner doesn't guarantee
-        // cq is in a consistent state.
-        string cqStr = cq->toString();
 
         // We'll now try to get the query runner that will execute this query for us. There
         // are a few cases in which we know upfront which runner we should get and, therefore,
@@ -569,7 +425,8 @@ namespace mongo {
         }
 
         if (!status.isOK()) {
-            uasserted(17007, "Couldn't get runner for query because: " + status.reason() + " query is " + cqStr);
+            // NOTE: Do not access cq as getRunner has deleted it.
+            uasserted(17007, "Unable to execute query: " + status.reason());
         }
 
         verify(NULL != rawRunner);

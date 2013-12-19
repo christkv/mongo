@@ -36,7 +36,7 @@ env.Library('base', [
         'stop_words_list.cpp',
         'tokenizer.cpp',
         ], LIBDEPS=["$BUILD_DIR/mongo/base/base",
-                    "$BUILD_DIR/mongo/bson",
+                    "$BUILD_DIR/mongo/db/common",
                     "$BUILD_DIR/mongo/platform/platform",
                     "$BUILD_DIR/third_party/shim_stemmer"
                     ])
@@ -48,7 +48,6 @@ env.Library( 'server_common', [
 
 env.Library('ftsmongod', [
         'fts_command_mongod.cpp',
-        'fts_search.cpp',
         ], LIBDEPS=["base","server_common"])
 
 

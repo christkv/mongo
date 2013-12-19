@@ -37,6 +37,7 @@
 #include "mongo/db/ops/update_request.h"
 #include "mongo/db/ops/update_lifecycle_impl.h"
 #include "mongo/db/ops/delete.h"
+#include "mongo/db/query/internal_plans.h"
 #include "mongo/db/repl/oplog.h"
 #include "mongo/db/repl/rs.h"
 
@@ -193,6 +194,16 @@ namespace mongo {
                     log() << "replSet " << o.toString() << rsLog;
                     throw rsfatal();
                 }
+                else if( cmdname == "collMod" ) {
+                    if ( o.nFields() == 2 &&
+                         o["usePowerOf2Sizes"].type() == Bool ) {
+                        log() << "replSet not rolling back change of usePowerOf2Sizes: " << o;
+                    }
+                    else {
+                        log() << "replSet error cannot rollback a collMod command: " << o;
+                        throw rsfatal();
+                    }
+                }
                 else {
                     log() << "replSet error can't rollback this command yet: " << o.toString() << rsLog;
                     log() << "replSet cmdname=" << cmdname << rsLog;
@@ -215,11 +226,19 @@ namespace mongo {
     static void syncRollbackFindCommonPoint(DBClientConnection *them, HowToFixUp& h) {
         verify( Lock::isLocked() );
         Client::Context c(rsoplog);
+
         NamespaceDetails *nsd = nsdetails(rsoplog);
         verify(nsd);
-        ReverseCappedCursor u(nsd);
-        if( !u.ok() )
+
+        boost::scoped_ptr<Runner> runner(
+            InternalPlanner::collectionScan(rsoplog, InternalPlanner::BACKWARD));
+
+        BSONObj ourObj;
+        DiskLoc ourLoc;
+
+        if (Runner::RUNNER_ADVANCED != runner->getNext(&ourObj, &ourLoc)) {
             throw rsfatal("our oplog empty or unreadable");
+        }
 
         const Query q = Query().sort(reverseNaturalObj);
         const bo fields = BSON( "ts" << 1 << "h" << 1 );
@@ -231,7 +250,6 @@ namespace mongo {
 
         if( t.get() == 0 || !t->more() ) throw rsfatal("remote oplog empty or unreadable");
 
-        BSONObj ourObj = u.current();
         OpTime ourTime = ourObj["ts"]._opTime();
         BSONObj theirObj = t->nextSafe();
         OpTime theirTime = theirObj["ts"]._opTime();
@@ -260,7 +278,7 @@ namespace mongo {
                     log() << "replSet rollback found matching events at " << ourTime.toStringPretty() << rsLog;
                     log() << "replSet rollback findcommonpoint scanned : " << scanned << rsLog;
                     h.commonPoint = ourTime;
-                    h.commonPointOurDiskloc = u.currLoc();
+                    h.commonPointOurDiskloc = ourLoc;
                     return;
                 }
 
@@ -276,15 +294,13 @@ namespace mongo {
                 theirObj = t->nextSafe();
                 theirTime = theirObj["ts"]._opTime();
 
-                u.advance();
-                if( !u.ok() ) {
+                if (Runner::RUNNER_ADVANCED != runner->getNext(&ourObj, &ourLoc)) {
                     log() << "replSet rollback error RS101 reached beginning of local oplog" << rsLog;
                     log() << "replSet   them:      " << them->toString() << " scanned: " << scanned << rsLog;
                     log() << "replSet   theirTime: " << theirTime.toStringLong() << rsLog;
                     log() << "replSet   ourTime:   " << ourTime.toStringLong() << rsLog;
                     throw rsfatal("RS101 reached beginning of local oplog [1]");
                 }
-                ourObj = u.current();
                 ourTime = ourObj["ts"]._opTime();
             }
             else if( theirTime > ourTime ) {
@@ -301,15 +317,13 @@ namespace mongo {
             else {
                 // theirTime < ourTime
                 refetch(h, ourObj);
-                u.advance();
-                if( !u.ok() ) {
+                if (Runner::RUNNER_ADVANCED != runner->getNext(&ourObj, &ourLoc)) {
                     log() << "replSet rollback error RS101 reached beginning of local oplog" << rsLog;
                     log() << "replSet   them:      " << them->toString() << " scanned: " << scanned << rsLog;
                     log() << "replSet   theirTime: " << theirTime.toStringLong() << rsLog;
                     log() << "replSet   ourTime:   " << ourTime.toStringLong() << rsLog;
                     throw rsfatal("RS101 reached beginning of local oplog [2]");
                 }
-                ourObj = u.current();
                 ourTime = ourObj["ts"]._opTime();
             }
         }

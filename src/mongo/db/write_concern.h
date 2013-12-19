@@ -30,15 +30,67 @@
 
 namespace mongo {
 
+    struct WriteConcernOptions {
+
+        WriteConcernOptions() { reset(); }
+
+        Status parse( const BSONObj& obj );
+
+        void reset() {
+            syncMode = NONE;
+            wNumNodes = 0;
+            wMode = "";
+            wTimeout = 0;
+        }
+
+        enum SyncMode { NONE, FSYNC, JOURNAL } syncMode;
+
+        int wNumNodes;
+        string wMode;
+
+        int wTimeout;
+    };
+
+    struct WriteConcernResult {
+        WriteConcernResult() {
+            reset();
+        }
+
+        void reset() {
+            syncMillis = -1;
+            fsyncFiles = -1;
+            wTimedOut = false;
+            wTime = -1;
+            err = "";
+        }
+
+        void appendTo( BSONObjBuilder* result ) const;
+
+        int syncMillis;
+        int fsyncFiles;
+
+        bool wTimedOut;
+        int wTime;
+        vector<BSONObj> writtenTo;
+
+        string err; // this is the old err field, should deprecate
+    };
+
     /**
-     * Helper method for commands to call.  Blocks until write concern (as specified in "cmdObj")
-     * is satisfied.  "err" should be set to true if the last operation succeeded, otherwise false.
-     * "result" will be filled with write concern results.  Returns false and sets "errmsg" on
-     * failure.
+     * Blocks until the database is sure the specified user write concern has been fulfilled, or
+     * returns an error status if the write concern fails.
+     *
+     * Takes a user write concern as well as the replication opTime the write concern applies to -
+     * if this opTime.isNull() no replication-related write concern options will be enforced.
+     *
+     * Returns result of the write concern if successful.
+     * Returns !OK if anything goes wrong.
+     * Returns WriteConcernLegacyOK if the write concern could not be applied but legacy GLE should
+     * not report an error.
      */
-    bool waitForWriteConcern(const BSONObj& cmdObj,
-                             bool err,
-                             BSONObjBuilder* result,
-                             string* errmsg);
+    Status waitForWriteConcern( const WriteConcernOptions& writeConcern,
+                                const OpTime& replOpTime,
+                                WriteConcernResult* result );
+
 
 } // namespace mongo

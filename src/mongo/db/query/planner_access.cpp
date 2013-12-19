@@ -51,6 +51,7 @@ namespace mongo {
         csn->name = query.ns();
         csn->filter.reset(query.root()->shallowClone());
         csn->tailable = tailable;
+        csn->maxScan = query.getParsed().getMaxScan();
 
         // If the sort is {$natural: +-1} this changes the direction of the collection scan.
         const BSONObj& sortObj = query.getParsed().getSort();
@@ -74,7 +75,8 @@ namespace mongo {
     }
 
     // static
-    QuerySolutionNode* QueryPlannerAccess::makeLeafNode(const IndexEntry& index,
+    QuerySolutionNode* QueryPlannerAccess::makeLeafNode(const CanonicalQuery& query,
+                                                        const IndexEntry& index,
                                                         MatchExpression* expr,
                                                         IndexBoundsBuilder::BoundsTightness* tightnessOut) {
         // QLOG() << "making leaf node for " << expr->toString() << endl;
@@ -101,6 +103,10 @@ namespace mongo {
             ret->indexKeyPattern = index.keyPattern;
             ret->nq = nearExpr->getData();
             ret->baseBounds.fields.resize(index.keyPattern.nFields());
+            if (NULL != query.getProj()) {
+                ret->addPointMeta = query.getProj()->wantGeoNearPoint();
+                ret->addDistMeta = query.getProj()->wantGeoNearDistance();
+            }
             return ret;
         }
         else if (indexIs2D) {
@@ -133,6 +139,8 @@ namespace mongo {
             isn->indexKeyPattern = index.keyPattern;
             isn->indexIsMultiKey = index.multikey;
             isn->bounds.fields.resize(index.keyPattern.nFields());
+            isn->maxScan = query.getParsed().getMaxScan();
+            isn->addKeyMetadata = query.getParsed().returnKey();
 
             IndexBoundsBuilder::translate(expr, index.keyPattern.firstElement(),
                                           &isn->bounds.fields[0], tightnessOut);
@@ -149,9 +157,9 @@ namespace mongo {
         const StageType type = node->getType();
         verify(STAGE_GEO_NEAR_2D != type);
 
-        if (STAGE_GEO_2D == type) {
+        if (STAGE_GEO_2D == type || STAGE_TEXT == type) {
             // XXX: 'expr' is possibly indexed by 'node'.  Right now we don't take advantage
-            // of covering for 2d indices.
+            // of covering here (??).
             *tightnessOut = IndexBoundsBuilder::INEXACT_FETCH;
             return;
         }
@@ -427,14 +435,22 @@ namespace mongo {
                                                   + curChild);
                     delete child;
                 }
-                // In the AND case, the filter can be brought above the AND node.
-                // But in the OR case, the filter only applies to one branch, so
-                // we must affix curChild's filter now. In order to apply the filter
-                // to the proper OR branch, create a FETCH node with the filter whose
-                // child is the IXSCAN.
-                else if (root->matchType() == MatchExpression::OR) {
-                    verify(NULL != currentScan.get());
+                else if (tightness == IndexBoundsBuilder::INEXACT_COVERED) {
+                    // The bounds are not exact, but the information needed to
+                    // evaluate the predicate is in the index key. Remove the
+                    // MatchExpression from its parent and attach it to the filter
+                    // of the index scan we're building.
+                    root->getChildVector()->erase(root->getChildVector()->begin()
+                                                  + curChild);
 
+                    _addFilterToSolutionNode(currentScan.get(), child, root->matchType());
+                }
+                else if (root->matchType() == MatchExpression::OR) {
+                    // In the AND case, the filter can be brought above the AND node.
+                    // But in the OR case, the filter only applies to one branch, so
+                    // we must affix curChild's filter now. In order to apply the filter
+                    // to the proper OR branch, create a FETCH node with the filter whose
+                    // child is the IXSCAN.
                     finishLeafNode(currentScan.get(), indices[currentIndexNumber]);
                     root->getChildVector()->erase(root->getChildVector()->begin()
                                                   + curChild);
@@ -466,7 +482,7 @@ namespace mongo {
                 currentIndexNumber = ixtag->index;
 
                 IndexBoundsBuilder::BoundsTightness tightness = IndexBoundsBuilder::INEXACT_FETCH;
-                currentScan.reset(makeLeafNode(indices[currentIndexNumber],
+                currentScan.reset(makeLeafNode(query, indices[currentIndexNumber],
                                                 child, &tightness));
 
                 if (tightness == IndexBoundsBuilder::EXACT && !inArrayOperator) {
@@ -478,14 +494,22 @@ namespace mongo {
                     delete child;
                     // Don't increment curChild.
                 }
-                // In the AND case, the filter can be brought above the AND node.
-                // But in the OR case, the filter only applies to one branch, so
-                // we must affix curChild's filter now. In order to apply the filter
-                // to the proper OR branch, create a FETCH node with the filter whose
-                // child is the IXSCAN.
-                else if (root->matchType() == MatchExpression::OR) {
-                    verify(NULL != currentScan.get());
+                else if (tightness == IndexBoundsBuilder::INEXACT_COVERED) {
+                    // The bounds are not exact, but the information needed to
+                    // evaluate the predicate is in the index key. Remove the
+                    // MatchExpression from its parent and attach it to the filter
+                    // of the index scan we're building.
+                    root->getChildVector()->erase(root->getChildVector()->begin()
+                                                  + curChild);
 
+                    _addFilterToSolutionNode(currentScan.get(), child, root->matchType());
+                }
+                else if (root->matchType() == MatchExpression::OR) {
+                    // In the AND case, the filter can be brought above the AND node.
+                    // But in the OR case, the filter only applies to one branch, so
+                    // we must affix curChild's filter now. In order to apply the filter
+                    // to the proper OR branch, create a FETCH node with the filter whose
+                    // child is the IXSCAN.
                     finishLeafNode(currentScan.get(), indices[currentIndexNumber]);
                     root->getChildVector()->erase(root->getChildVector()->begin()
                                                   + curChild);
@@ -578,8 +602,18 @@ namespace mongo {
         if (root->numChildren() > 0) {
             FetchNode* fetch = new FetchNode();
             verify(NULL != autoRoot.get());
-            // Takes ownership.
-            fetch->filter.reset(autoRoot.release());
+            if (autoRoot->numChildren() == 1) {
+                // An $and of one thing is that thing.
+                MatchExpression* child = autoRoot->getChild(0);
+                autoRoot->getChildVector()->clear();
+                // Takes ownership.
+                fetch->filter.reset(child);
+                // 'autoRoot' will delete the empty $and.
+            }
+            else { // root->numChildren() > 1
+                // Takes ownership.
+                fetch->filter.reset(autoRoot.release());
+            }
             // takes ownership
             fetch->children.push_back(andResult);
             andResult = fetch;
@@ -711,7 +745,7 @@ namespace mongo {
                 IndexTag* tag = static_cast<IndexTag*>(root->getTag());
 
                 IndexBoundsBuilder::BoundsTightness tightness = IndexBoundsBuilder::EXACT;
-                QuerySolutionNode* soln = makeLeafNode(indices[tag->index], root,
+                QuerySolutionNode* soln = makeLeafNode(query, indices[tag->index], root,
                                                        &tightness);
                 verify(NULL != soln);
                 stringstream ss;
@@ -733,12 +767,18 @@ namespace mongo {
                 if (tightness == IndexBoundsBuilder::EXACT) {
                     return soln;
                 }
-
-                FetchNode* fetch = new FetchNode();
-                verify(NULL != autoRoot.get());
-                fetch->filter.reset(autoRoot.release());
-                fetch->children.push_back(soln);
-                return fetch;
+                else if (tightness == IndexBoundsBuilder::INEXACT_COVERED) {
+                    verify(NULL == soln->filter.get());
+                    soln->filter.reset(autoRoot.release());
+                    return soln;
+                }
+                else { // tightness == IndexBoundsBuilder::INEXACT_FETCH
+                    FetchNode* fetch = new FetchNode();
+                    verify(NULL != autoRoot.get());
+                    fetch->filter.reset(autoRoot.release());
+                    fetch->children.push_back(soln);
+                    return fetch;
+                }
             }
             else if (Indexability::arrayUsesIndexOnChildren(root)) {
                 QuerySolutionNode* solution = NULL;
@@ -805,6 +845,8 @@ namespace mongo {
         isn->indexKeyPattern = index.keyPattern;
         isn->indexIsMultiKey = index.multikey;
         isn->bounds.fields.resize(index.keyPattern.nFields());
+        isn->maxScan = query.getParsed().getMaxScan();
+        isn->addKeyMetadata = query.getParsed().returnKey();
 
         // TODO: can we use simple bounds with this compound idx?
         BSONObjIterator it(isn->indexKeyPattern);
@@ -819,6 +861,80 @@ namespace mongo {
             QueryPlannerCommon::reverseScans(isn);
             isn->direction = -1;
         }
+
+        MatchExpression* filter = query.root()->shallowClone();
+
+        // If it's find({}) remove the no-op root.
+        if (MatchExpression::AND == filter->matchType() && (0 == filter->numChildren())) {
+            // XXX wasteful fix
+            delete filter;
+            solnRoot = isn;
+        }
+        else {
+            // TODO: We may not need to do the fetch if the predicates in root are covered.  But
+            // for now it's safe (though *maybe* slower).
+            FetchNode* fetch = new FetchNode();
+            fetch->filter.reset(filter);
+            fetch->children.push_back(isn);
+            solnRoot = fetch;
+        }
+
+        return solnRoot;
+    }
+
+    // static
+
+    void QueryPlannerAccess::_addFilterToSolutionNode(QuerySolutionNode* node,
+                                                      MatchExpression* match,
+                                                      MatchExpression::MatchType type) {
+        if (NULL == node->filter) {
+            node->filter.reset(match);
+        }
+        // The 'node' already has either an AND or OR filter that matches
+        // 'type'. Add 'match' as another branch of the filter.
+        else if (type == node->filter->matchType()) {
+            ListOfMatchExpression* listFilter =
+                static_cast<ListOfMatchExpression*>(node->filter.get());
+            listFilter->add(match);
+        }
+        // The 'node' already has a filter that does not match
+        // 'type'. If 'type' is AND, then combine 'match' with
+        // the existing filter by adding an AND. If 'type' is OR,
+        // combine by adding an OR node.
+        else {
+            ListOfMatchExpression* listFilter;
+            if (MatchExpression::AND == type) {
+                listFilter = new AndMatchExpression();
+            }
+            else {
+                verify(MatchExpression::OR == type);
+                listFilter = new OrMatchExpression();
+            }
+            MatchExpression* oldFilter = node->filter->shallowClone();
+            listFilter->add(oldFilter);
+            listFilter->add(match);
+            node->filter.reset(listFilter);
+        }
+    }
+
+    QuerySolutionNode* QueryPlannerAccess::makeIndexScan(const IndexEntry& index,
+                                                         const CanonicalQuery& query,
+                                                         const QueryPlannerParams& params,
+                                                         const BSONObj& startKey,
+                                                         const BSONObj& endKey) {
+        QuerySolutionNode* solnRoot = NULL;
+
+        // Build an ixscan over the id index, use it, and return it.
+        IndexScanNode* isn = new IndexScanNode();
+        isn->indexKeyPattern = index.keyPattern;
+        isn->indexIsMultiKey = index.multikey;
+        isn->direction = 1;
+        isn->maxScan = query.getParsed().getMaxScan();
+        isn->addKeyMetadata = query.getParsed().returnKey();
+        isn->bounds.isSimpleRange = true;
+        isn->bounds.startKey = startKey;
+        isn->bounds.endKey = endKey;
+        isn->bounds.endKeyInclusive = false;
 
         MatchExpression* filter = query.root()->shallowClone();
 

@@ -49,6 +49,12 @@ namespace mongo {
         ASSERT( !result.getValue()->matchesBSON( BSON( "x" << 3 ) ) );
     }
 
+    TEST( MatchExpressionParserLeafTest, SimpleEQUndefined ) {
+        BSONObj query = BSON( "x" << BSON( "$eq" << BSONUndefined ) );
+        StatusWithMatchExpression result = MatchExpressionParser::parse( query );
+        ASSERT_FALSE( result.isOK() );
+    }
+
     TEST( MatchExpressionParserLeafTest, SimpleGT1 ) {
         BSONObj query = BSON( "x" << BSON( "$gt" << 2 ) );
         StatusWithMatchExpression result = MatchExpressionParser::parse( query );
@@ -299,6 +305,12 @@ namespace mongo {
         ASSERT_FALSE( result.isOK() );
     }
 
+    TEST( MatchExpressionParserLeafTest, INUndefined ) {
+        BSONObj query = BSON( "x" << BSON( "$in" << BSON_ARRAY( BSONUndefined ) ) );
+        StatusWithMatchExpression result = MatchExpressionParser::parse( query );
+        ASSERT_FALSE( result.isOK() );
+    }
+
     TEST( MatchExpressionParserLeafTest, INNotElemMatch ) {
         BSONObj query = BSON( "x" << BSON( "$in" << BSON_ARRAY( BSON( "$elemMatch" << 1 ) ) ) );
         StatusWithMatchExpression result = MatchExpressionParser::parse( query );
@@ -406,6 +418,15 @@ namespace mongo {
     TEST( MatchExpressionParserLeafTest, RegexBad ) {
         BSONObj query = BSON( "x" << BSON( "$regex" << "abc" << "$optionas" << "i" ) );
         StatusWithMatchExpression result = MatchExpressionParser::parse( query );
+        ASSERT_FALSE( result.isOK() );
+
+        // $regex does not with numbers
+        query = BSON( "x" << BSON( "$regex" << 123 ) );
+        result = MatchExpressionParser::parse( query );
+        ASSERT_FALSE( result.isOK() );
+
+        query = BSON( "x" << BSON( "$regex" << BSON_ARRAY("abc") ) );
+        result = MatchExpressionParser::parse( query );
         ASSERT_FALSE( result.isOK() );
 
         query = BSON( "x" << BSON( "$optionas" << "i" ) );

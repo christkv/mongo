@@ -29,7 +29,7 @@
 #include "mongo/db/exec/index_scan.h"
 
 #include "mongo/db/exec/filter.h"
-#include "mongo/db/index/catalog_hack.h"
+#include "mongo/db/exec/working_set_computed_data.h"
 #include "mongo/db/index/index_access_method.h"
 #include "mongo/db/index/index_cursor.h"
 #include "mongo/db/index/index_descriptor.h"
@@ -177,16 +177,22 @@ namespace mongo {
             }
         }
 
+        BSONObj ownedKeyObj = _indexCursor->getKey().getOwned();
+
         WorkingSetID id = _workingSet->allocate();
         WorkingSetMember* member = _workingSet->get(id);
         member->loc = loc;
-        member->keyData.push_back(IndexKeyDatum(_descriptor->keyPattern(),
-                                                _indexCursor->getKey().getOwned()));
+        member->keyData.push_back(IndexKeyDatum(_descriptor->keyPattern(), ownedKeyObj));
         member->state = WorkingSetMember::LOC_AND_IDX;
 
         if (Filter::passes(member, _filter)) {
             if (NULL != _filter) {
                 ++_specificStats.matchTested;
+            }
+            if (_params.addKeyMetadata) {
+                BSONObjBuilder bob;
+                bob.appendKeys(_descriptor->keyPattern(), ownedKeyObj);
+                member->addComputed(new IndexKeyComputedData(bob.obj()));
             }
             *out = id;
             ++_commonStats.advanced;
@@ -202,6 +208,13 @@ namespace mongo {
         if (NULL == _indexCursor.get()) {
             // Have to call work() at least once.
             return false;
+        }
+
+        // If there's a limit on how many keys we can scan, we may be EOF when we hit that.
+        if (0 != _params.maxScan) {
+            if (_specificStats.keysExamined >= _params.maxScan) {
+                return true;
+            }
         }
 
         return _hitEnd || _indexCursor->isEOF();

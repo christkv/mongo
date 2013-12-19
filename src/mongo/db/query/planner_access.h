@@ -55,6 +55,15 @@ namespace mongo {
                                                  const QueryPlannerParams& params,
                                                  int direction = 1);
 
+        /**
+         * Return a plan that scans the provided index from [startKey to endKey).
+         */
+        static QuerySolutionNode* makeIndexScan(const IndexEntry& index,
+                                                const CanonicalQuery& query,
+                                                const QueryPlannerParams& params,
+                                                const BSONObj& startKey,
+                                                const BSONObj& endKey);
+
         //
         // Indexed Data Access methods.
         //
@@ -127,7 +136,8 @@ namespace mongo {
          * If the node is a geo node, grab the geo data from 'expr' and stuff it into the
          * geo solution node of the appropriate type.
          */
-        static QuerySolutionNode* makeLeafNode(const IndexEntry& index,
+        static QuerySolutionNode* makeLeafNode(const CanonicalQuery& query,
+                                               const IndexEntry& index,
                                                MatchExpression* expr,
                                                IndexBoundsBuilder::BoundsTightness* tightnessOut);
 
@@ -155,6 +165,17 @@ namespace mongo {
          * Aligns OILs (and bounds) according to the kp direction * the scanDir.
          */
         static void alignBounds(IndexBounds* bounds, const BSONObj& kp, int scanDir = 1);
+
+    private:
+        /**
+         * Add the filter 'match' to the query solution node 'node'. Takes
+         * ownership of 'match'.
+         *
+         * The MatchType, 'type', indicates whether 'match' is a child of an
+         * AND or an OR match expression.
+         */
+        static void _addFilterToSolutionNode(QuerySolutionNode* node, MatchExpression* match,
+                                             MatchExpression::MatchType type);
     };
 
 }  // namespace mongo

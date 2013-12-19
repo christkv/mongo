@@ -8,6 +8,7 @@ env.Library(
         "canonical_query.cpp",
         "index_tag.cpp",
         "parsed_projection.cpp",
+        "plan_cache.cpp",
         "plan_enumerator.cpp",
         "planner_access.cpp",
         "planner_analysis.cpp",
@@ -29,6 +30,7 @@ env.Library(
         "cached_plan_runner.cpp",
         "eof_runner.cpp",
         "explain_plan.cpp",
+        "get_runner.cpp",
         "idhack_runner.cpp",
         "internal_runner.cpp",
         "multi_plan_runner.cpp",
@@ -124,6 +126,26 @@ env.CppUnitTest(
     target="parsed_projection_test",
     source=[
         "parsed_projection_test.cpp"
+    ],
+    LIBDEPS=[
+        "query_planner",
+    ],
+)
+
+env.CppUnitTest(
+    target="plan_cache_test",
+    source=[
+        "plan_cache_test.cpp"
+    ],
+    LIBDEPS=[
+        "query_planner",
+    ],
+)
+
+env.CppUnitTest(
+    target="planner_ixselect_test",
+    source=[
+        "planner_ixselect_test.cpp"
     ],
     LIBDEPS=[
         "query_planner",

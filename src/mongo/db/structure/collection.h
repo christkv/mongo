@@ -37,7 +37,7 @@
 #include "mongo/db/diskloc.h"
 #include "mongo/db/exec/collection_scan_common.h"
 #include "mongo/db/namespace_string.h"
-#include "mongo/db/storage/record_store.h"
+#include "mongo/db/structure/record_store.h"
 #include "mongo/db/structure/collection_info_cache.h"
 #include "mongo/platform/cstdint.h"
 
@@ -123,6 +123,8 @@ namespace mongo {
         //
         // Stats
         //
+
+        bool isCapped() const;
 
         uint64_t numRecords() const;
 

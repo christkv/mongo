@@ -148,10 +148,12 @@ namespace mongo {
             dassert( NULL == command->conn );
 
             try {
-                // TODO: Figure out how to handle repl sets, configs
                 dassert( command->endpoint.type() == ConnectionString::MASTER ||
                     command->endpoint.type() == ConnectionString::CUSTOM );
-                command->conn = shardConnectionPool.get( command->endpoint, 0 /*timeout*/);
+
+                // TODO: Fix the pool up to take millis directly
+                int timeoutSecs = _timeoutMillis / 1000;
+                command->conn = shardConnectionPool.get( command->endpoint, timeoutSecs );
 
                 if ( hasBatchWriteFeature( command->conn )
                      || !isBatchWriteCommand( command->cmdObj ) ) {
@@ -256,5 +258,9 @@ namespace mongo {
         }
 
         _pendingCommands.clear();
+    }
+
+    void DBClientMultiCommand::setTimeoutMillis( int milliSecs ) {
+        _timeoutMillis = milliSecs;
     }
 }

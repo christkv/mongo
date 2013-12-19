@@ -84,12 +84,16 @@ namespace mongo {
 
     }
 
+    bool IndexCatalog::ok() const {
+        return ( _magic == INDEX_CATALOG_MAGIC );
+    }
+
     void IndexCatalog::_checkMagic() const {
         dassert( _descriptorCache.capacity() == NamespaceDetails::NIndexesMax );
         dassert( _accessMethodCache.capacity() == NamespaceDetails::NIndexesMax );
         dassert( _forcedBtreeAccessMethodCache.capacity() == NamespaceDetails::NIndexesMax );
 
-        if ( _magic == INDEX_CATALOG_MAGIC )
+        if ( ok() )
             return;
         log() << "IndexCatalog::_magic wrong, is : " << _magic;
         fassertFailed(17198);
@@ -406,6 +410,16 @@ namespace mongo {
             keyField.parse( keyElement.fieldName() );
 
             const size_t numParts = keyField.numParts();
+            if ( numParts == 0 ) {
+                return Status( ErrorCodes::CannotCreateIndex,
+                               str::stream() << "Index key cannot be an empty field." );
+            }
+            // "$**" is acceptable for a text index.
+            if ( str::equals( keyElement.fieldName(), "$**" ) &&
+                 keyElement.valuestrsafe() == IndexNames::TEXT )
+                continue;
+
+
             for ( size_t i = 0; i != numParts; ++i ) {
                 const StringData part = keyField.getPart(i);
 
@@ -416,10 +430,6 @@ namespace mongo {
                 }
 
                 if ( part[0] != '$' )
-                    continue;
-
-                // This is used for text indexing.
-                if ( part == "$**" )
                     continue;
 
                 // Check if the '$'-prefixed field is part of a DBRef: since we don't have the
@@ -436,6 +446,13 @@ namespace mongo {
                                                  << "field name starts with '$'." );
                 }
             }
+        }
+
+        if ( _collection->isCapped() && spec["dropDups"].trueValue() ) {
+            return Status( ErrorCodes::CannotCreateIndex,
+                           str::stream() << "Cannot create an index with dropDups=true on a "
+                                         << "capped collection, as capped collections do "
+                                         << "not allow document removal." );
         }
 
         if ( !IndexDetails::isIdIndexPattern( key ) ) {
@@ -841,7 +858,7 @@ namespace mongo {
 
         if (IndexNames::HASHED == type ||
             IndexNames::GEO_2DSPHERE == type ||
-            IndexNames::TEXT == type || IndexNames::TEXT_INTERNAL == type ||
+            IndexNames::TEXT == type ||
             IndexNames::GEO_HAYSTACK == type ||
             "" == type ||
             IndexNames::GEO_2D == type ) {
@@ -873,7 +890,7 @@ namespace mongo {
         else if (IndexNames::GEO_2DSPHERE == type) {
             newlyCreated = new S2AccessMethod(desc);
         }
-        else if (IndexNames::TEXT == type || IndexNames::TEXT_INTERNAL == type) {
+        else if (IndexNames::TEXT == type) {
             newlyCreated = new FTSAccessMethod(desc);
         }
         else if (IndexNames::GEO_HAYSTACK == type) {

@@ -34,6 +34,8 @@
 
 namespace mongo {
 
+    struct CachedSolution;
+
     /**
      * QueryPlanner's job is to provide an entry point to the query planning and optimization
      * process.
@@ -46,9 +48,14 @@ namespace mongo {
          *
          * Caller owns pointers in *out.
          */
-        static void plan(const CanonicalQuery& query,
-                         const QueryPlannerParams& params,
-                         vector<QuerySolution*>* out);
+        static Status plan(const CanonicalQuery& query,
+                           const QueryPlannerParams& params,
+                           std::vector<QuerySolution*>* out);
+
+        static Status planFromCache(const CanonicalQuery& query,
+                                    const QueryPlannerParams& params,
+                                    CachedSolution* cachedSoln,
+                                    QuerySolution** out);
     };
 
 }  // namespace mongo

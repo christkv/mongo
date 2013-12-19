@@ -32,28 +32,31 @@
 #include "mongo/base/status.h"
 #include "mongo/client/dbclientinterface.h" // ConnectionString (header-only)
 #include "mongo/s/write_ops/batch_write_op.h"
-#include "mongo/s/write_ops/batched_error_detail.h"
+#include "mongo/s/write_ops/write_error_detail.h"
 
 namespace mongo {
 
-    namespace {
+    BatchWriteExec::BatchWriteExec( NSTargeter* targeter,
+                                    ShardResolver* resolver,
+                                    MultiCommandDispatch* dispatcher ) :
+        _targeter( targeter ),
+        _resolver( resolver ),
+        _dispatcher( dispatcher ),
+        _stats( new BatchWriteExecStats ) {
+    }
 
-        struct ConnectionStringComp {
-            bool operator()( const ConnectionString& connStrA,
-                             const ConnectionString& connStrB ) const {
-                return connStrA.toString().compare( connStrB.toString() ) < 0;
-            }
-        };
+    namespace {
 
         //
         // Map which allows associating ConnectionString hosts with TargetedWriteBatches
         // This is needed since the dispatcher only returns hosts with responses.
         //
+
         // TODO: Unordered map?
         typedef map<ConnectionString, TargetedWriteBatch*, ConnectionStringComp> HostBatchMap;
     }
 
-    static void buildErrorFrom( const Status& status, BatchedErrorDetail* error ) {
+    static void buildErrorFrom( const Status& status, WriteErrorDetail* error ) {
         error->setErrCode( status.code() );
         error->setErrMessage( status.reason() );
     }
@@ -137,7 +140,8 @@ namespace mongo {
             //
 
             size_t numSent = 0;
-            while ( numSent != childBatches.size() ) {
+            size_t numToSend = childBatches.size();
+            while ( numSent != numToSend ) {
 
                 // Collect batches out on the network, mapped by endpoint
                 HostBatchMap pendingBatches;
@@ -170,12 +174,13 @@ namespace mongo {
                         // Record a resolve failure
                         // TODO: It may be necessary to refresh the cache if stale, or maybe just
                         // cancel and retarget the batch
-                        BatchedErrorDetail error;
+                        WriteErrorDetail error;
                         buildErrorFrom( resolveStatus, &error );
                         batchOp.noteBatchError( *nextBatch, error );
 
                         // We're done with this batch
                         *it = NULL;
+                        --numToSend;
                         continue;
                     }
 
@@ -243,11 +248,18 @@ namespace mongo {
                             noteStaleResponses( staleErrors, _targeter );
                             ++numStaleBatches;
                         }
+
+                        // Remember that we successfully wrote to this shard
+                        // NOTE: This will record lastOps for shards where we actually didn't update
+                        // or delete any documents, which preserves old behavior but is conservative
+                        _stats->noteWriteAt( shardHost,
+                                             response.isLastOpSet() ?
+                                                 OpTime( response.getLastOp() ) : OpTime() );
                     }
                     else {
 
                         // Error occurred dispatching, note it
-                        BatchedErrorDetail error;
+                        WriteErrorDetail error;
                         buildErrorFrom( dispatchStatus, &error );
                         batchOp.noteBatchError( *batch, error );
                     }
@@ -258,4 +270,19 @@ namespace mongo {
         batchOp.buildClientResponse( clientResponse );
     }
 
+    const BatchWriteExecStats& BatchWriteExec::getStats() {
+        return *_stats;
+    }
+
+    BatchWriteExecStats* BatchWriteExec::releaseStats() {
+        return _stats.release();
+    }
+
+    void BatchWriteExecStats::noteWriteAt( const ConnectionString& host, OpTime opTime ) {
+        _writeOpTimes[host] = opTime;
+    }
+
+    const HostOpTimeMap& BatchWriteExecStats::getWriteOpTimes() const {
+        return _writeOpTimes;
+    }
 }

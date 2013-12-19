@@ -52,8 +52,9 @@ namespace mongo {
          * document / query.
          */
         enum MetaProjection {
-            META_TEXT,
-            META_GEO,
+            META_TEXT_SCORE,
+            META_GEONEAR_DIST,
+            META_GEONEAR_POINT,
             META_DISKLOC,
             META_IX_KEY,
         };
@@ -182,6 +183,10 @@ namespace mongo {
 
         // Projections that aren't sourced from the document or index keys.
         MetaMap _meta;
+
+        // Do we have a returnKey projection?  If so we *only* output the index key metadata.  If
+        // it's not found we output nothing.
+        bool _hasReturnKey;
     };
 
 }  // namespace mongo

@@ -15,6 +15,18 @@
  *
  *    You should have received a copy of the GNU Affero General Public License
  *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ *    As a special exception, the copyright holders give permission to link the
+ *    code of portions of this program with the OpenSSL library under certain
+ *    conditions as described in each individual source file and distribute
+ *    linked combinations including the program with the OpenSSL library. You
+ *    must comply with the GNU Affero General Public License in all respects
+ *    for all of the code used other than as permitted herein. If you modify
+ *    file(s) with this exception, you may extend this exception to your
+ *    version of the file(s), but you are not obligated to do so. If you do not
+ *    wish to do so, delete this exception statement from your version. If you
+ *    delete this exception statement from all source files in the program,
+ *    then also delete it in the license file.
  */
 
 #include "mongo/pch.h"
@@ -134,6 +146,37 @@ namespace JsonTests {
                 BSONObjBuilder b;
                 b.append( "a", -1 );
                 ASSERT_EQUALS( "{ \"a\" : -1 }", b.done().jsonString( Strict ) );
+            }
+        };
+
+        class NumberLongStrict {
+        public:
+            void run() {
+                BSONObjBuilder b;
+                b.append("a", 20000LL);
+                ASSERT_EQUALS("{ \"a\" : { \"$numberLong\" : \"20000\" } }",
+                              b.done().jsonString(Strict));
+            }
+        };
+
+        // Test a NumberLong that is too big to fit into a 32 bit integer
+        class NumberLongStrictLarge {
+        public:
+            void run() {
+                BSONObjBuilder b;
+                b.append("a", 9223372036854775807LL);
+                ASSERT_EQUALS("{ \"a\" : { \"$numberLong\" : \"9223372036854775807\" } }",
+                              b.done().jsonString(Strict));
+            }
+        };
+
+        class NumberLongStrictNegative {
+        public:
+            void run() {
+                BSONObjBuilder b;
+                b.append("a", -20000LL);
+                ASSERT_EQUALS("{ \"a\" : { \"$numberLong\" : \"-20000\" } }",
+                              b.done().jsonString(Strict));
             }
         };
 
@@ -2477,6 +2520,9 @@ namespace JsonTests {
             add< JsonStringTests::InvalidNumbers >();
             add< JsonStringTests::NumberPrecision >();
             add< JsonStringTests::NegativeNumber >();
+            add< JsonStringTests::NumberLongStrict >();
+            add< JsonStringTests::NumberLongStrictLarge >();
+            add< JsonStringTests::NumberLongStrictNegative >();
             add< JsonStringTests::SingleBoolMember >();
             add< JsonStringTests::SingleNullMember >();
             add< JsonStringTests::SingleUndefinedMember >();
