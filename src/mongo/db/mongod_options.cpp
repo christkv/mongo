@@ -44,6 +44,7 @@
 #include "mongo/util/net/ssl_options.h"
 #include "mongo/util/options_parser/startup_options.h"
 #include "mongo/util/version.h"
+#include "mongo/util/version_reporting.h"
 
 namespace mongo {
 
@@ -100,7 +101,7 @@ namespace mongo {
 
 #endif
         general_options.addOptionChaining("diaglog", "diaglog", moe::Int,
-                "0=off 1=W 2=R 3=both 7=W+some reads");
+                "DEPRECATED: 0=off 1=W 2=R 3=both 7=W+some reads").hidden();
 
         general_options.addOptionChaining("directoryperdb", "directoryperdb", moe::Switch,
                 "each database will be stored in a separate directory");
@@ -464,6 +465,7 @@ namespace mongo {
             storageGlobalParams.smallfiles = true;
         }
         if (params.count("diaglog")) {
+            warning() << "--diaglog is deprecated and will be removed in a future release";
             int x = params["diaglog"].as<int>();
             if ( x < 0 || x > 7 ) {
                 return Status(ErrorCodes::BadValue, "can't interpret --diaglog setting");

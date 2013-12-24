@@ -55,6 +55,7 @@
 #include "mongo/db/storage_options.h"
 #include "mongo/db/structure/collection.h"
 #include "mongo/s/d_logic.h"
+#include "mongo/scripting/engine.h"
 #include "mongo/util/elapsed_tracker.h"
 #include "mongo/util/file.h"
 #include "mongo/util/startup_test.h"
@@ -369,6 +370,11 @@ namespace mongo {
         logOpForSharding(opstr, ns, obj, patt, fullObj, fromMigrate);
         logOpForDbHash(opstr, ns, obj, patt, fullObj, fromMigrate);
         getGlobalAuthorizationManager()->logOp(opstr, ns, obj, patt, b);
+
+        if ( strstr( ns, ".system.js" ) ) {
+            Scope::storedFuncMod(); // this is terrible
+        }
+
     }
 
     void createOplog() {

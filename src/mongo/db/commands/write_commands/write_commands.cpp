@@ -34,6 +34,7 @@
 #include "mongo/db/curop.h"
 #include "mongo/db/json.h"
 #include "mongo/db/lasterror.h"
+#include "mongo/db/ops/insert.h"
 #include "mongo/db/server_parameters.h"
 #include "mongo/db/stats/counters.h"
 
@@ -126,8 +127,29 @@ namespace mongo {
         NamespaceString nss(dbName, request.getNS());
         request.setNS(nss.ns());
 
+        Status status = userAllowedWriteNS( nss );
+        if ( !status.isOK() )
+            return appendCommandStatus( result, status );
+
         if ( cc().curop() )
             cc().curop()->setNS( nss.ns() );
+
+        if ( request.getBatchType() == BatchedCommandRequest::BatchType_Insert ) {
+            // check all docs
+            BatchedInsertRequest* insertRequest = request.getInsertRequest();
+            vector<BSONObj>& docsToInsert = insertRequest->getDocuments();
+            for ( size_t i = 0; i < docsToInsert.size(); i++ ) {
+                StatusWith<BSONObj> fixed = fixDocumentForInsert( docsToInsert[i] );
+                if ( !fixed.isOK() ) {
+                    // we don't return early since each doc can be handled independantly
+                    continue;
+                }
+                if ( fixed.getValue().isEmpty() ) {
+                    continue;
+                }
+                docsToInsert[i] = fixed.getValue();
+            }
+        }
 
         BSONObj defaultWriteConcern;
         // This is really bad - it's only safe because we leak the defaults by overriding them with

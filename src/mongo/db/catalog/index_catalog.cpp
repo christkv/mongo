@@ -261,7 +261,10 @@ namespace mongo {
             verify( idxNo >= 0 );
             _deleteCacheEntry( idxNo );
 
-            return Status( ErrorCodes::InternalError, e.what(), e.getCode() );
+            ErrorCodes::Error codeToUse = ErrorCodes::fromInt( e.getCode() );
+            if ( codeToUse == ErrorCodes::UnknownError )
+                return Status( ErrorCodes::InternalError, e.what(), e.getCode() );
+            return Status( codeToUse, e.what() );
         }
 
 
@@ -375,6 +378,15 @@ namespace mongo {
             // this isn't really proper, but we never want it and its not an error per se
             return Status( ErrorCodes::IndexAlreadyExists, "cannot index freelist" );
         }
+
+        StringData specNamespace = spec.getStringField("ns");
+        if ( specNamespace.size() == 0 )
+            return Status( ErrorCodes::CannotCreateIndex,
+                           "the index spec needs a 'ns' field'" );
+
+        if ( _collection->ns() != specNamespace )
+            return Status( ErrorCodes::CannotCreateIndex,
+                           "the index spec ns does not match" );
 
         // logical name of the index
         const char *name = spec.getStringField("name");

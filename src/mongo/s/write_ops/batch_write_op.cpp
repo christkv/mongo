@@ -331,14 +331,12 @@ namespace mongo {
     static void cloneBatchErrorTo( const BatchedCommandResponse& batchResp,
                                    WriteErrorDetail* details ) {
         details->setErrCode( batchResp.getErrCode() );
-        if ( batchResp.isErrInfoSet() ) details->setErrInfo( batchResp.getErrInfo() );
         details->setErrMessage( batchResp.getErrMessage() );
     }
 
     static void cloneBatchErrorFrom( const WriteErrorDetail& details,
                                      BatchedCommandResponse* response ) {
         response->setErrCode( details.getErrCode() );
-        if ( details.isErrInfoSet() ) response->setErrInfo( details.getErrInfo() );
         response->setErrMessage( details.getErrMessage() );
     }
 
@@ -407,11 +405,9 @@ namespace mongo {
 
         // Special handling for write concern errors, save for later
         if ( response.isWriteConcernErrorSet() ) {
-            // TODO: XXX use WCErrorDetail?
-            WriteErrorDetail error;
-            cloneBatchErrorTo( response, &error );
-            ShardError* wcError = new ShardError( targetedBatch.getEndpoint(), error );
-            _wcErrors.mutableVector().push_back( wcError );
+            auto_ptr<ShardWCError> wcError( new ShardWCError( targetedBatch.getEndpoint(),
+                                                              *response.getWriteConcernError() ));
+            _wcErrors.mutableVector().push_back( wcError.release() );
         }
 
         vector<WriteErrorDetail*> itemErrors;
@@ -554,6 +550,25 @@ namespace mongo {
         if ( !_clientRequest->isVerboseWC() ) {
             dassert( batchResp->isValid( NULL ) );
             return;
+        }
+
+        if ( !_wcErrors.empty() ) {
+            WCErrorDetail error;
+            error.setErrCode( ErrorCodes::WriteConcernFailed );
+
+            // Generate the multi-error message below
+            stringstream msg;
+            msg << "multiple errors reported : ";
+
+            for ( vector<ShardWCError*>::const_iterator it = _wcErrors.begin();
+                    it != _wcErrors.end(); ++it ) {
+                const ShardWCError* wcError = *it;
+                if ( it != _wcErrors.begin() ) msg << " :: and :: ";
+                msg << wcError->error.getErrMessage() << " at " << wcError->endpoint.shardName;
+            }
+
+            error.setErrMessage( msg.str() );
+            batchResp->setWriteConcernError( error );
         }
 
         //

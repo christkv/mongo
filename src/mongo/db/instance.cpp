@@ -63,6 +63,7 @@
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/ops/count.h"
 #include "mongo/db/ops/delete.h"
+#include "mongo/db/ops/insert.h"
 #include "mongo/db/ops/update.h"
 #include "mongo/db/ops/update_lifecycle_impl.h"
 #include "mongo/db/ops/update_driver.h"
@@ -587,6 +588,7 @@ namespace mongo {
     void receivedUpdate(Message& m, CurOp& op) {
         DbMessage d(m);
         NamespaceString ns(d.getns());
+        uassertStatusOK( userAllowedWriteNS( ns ) );
         op.debug().ns = ns.ns();
         int flags = d.pullInt();
         BSONObj query = d.nextJsObj();
@@ -672,6 +674,7 @@ namespace mongo {
     void receivedDelete(Message& m, CurOp& op) {
         DbMessage d(m);
         NamespaceString ns(d.getns());
+        uassertStatusOK( userAllowedWriteNS( ns ) );
 
         op.debug().ns = ns.ns();
         int flags = d.pullInt();
@@ -839,47 +842,55 @@ namespace mongo {
         return ok;
     }
 
-    void checkAndInsert(const char *ns, /*modifies*/BSONObj& js) {
-        uassert( 10059 , "object to insert too large", js.objsize() <= BSONObjMaxUserSize);
-        {
-            BSONObjIterator i( js );
-            while ( i.more() ) {
-                BSONElement e = i.next();
+    void checkAndInsert(Client::Context& ctx, const char *ns, /*modifies*/BSONObj& js) {
+        if ( nsToCollectionSubstring( ns ) == "system.indexes" ) {
+            string targetNS = js["ns"].String();
+            uassertStatusOK( userAllowedWriteNS( targetNS ) );
 
-                // No '$' prefixed field names allowed.
-                // NOTE: We only check top level (scanning deep would be too expensive).
-                uassert( 13511,
-                         str::stream() << "Document can't have $ prefixed field names: "
-                                       << e.fieldName(),
-                         e.fieldName()[0] != '$' );
-
-                // check no regexp for _id (SERVER-9502)
-                // also, disallow undefined and arrays
-                if (str::equals(e.fieldName(), "_id")) {
-                    uassert(16824, "can't use a regex for _id", e.type() != RegEx);
-                    uassert(17150, "can't use undefined for _id", e.type() != Undefined);
-                    uassert(17151, "can't use an array for _id", e.type() != Array);
-                }
+            Collection* collection = ctx.db()->getCollection( targetNS );
+            if ( !collection ) {
+                // implicitly create
+                collection = ctx.db()->createCollection( targetNS );
+                verify( collection );
             }
+
+            // Only permit interrupting an (index build) insert if the
+            // insert comes from a socket client request rather than a
+            // parent operation using the client interface.  The parent
+            // operation might not support interrupts.
+            bool mayInterrupt = cc().curop()->parent() == NULL;
+
+            Status status = collection->getIndexCatalog()->createIndex( js, mayInterrupt );
+
+            if ( status.code() == ErrorCodes::IndexAlreadyExists )
+                return;
+
+            uassertStatusOK( status );
+            logOp( "i", ns, js );
+            return;
         }
 
-        theDataFileMgr.insertWithObjMod(ns,
-                                        // May be modified in the call to add an _id field.
-                                        js,
-                                        // Only permit interrupting an (index build) insert if the
-                                        // insert comes from a socket client request rather than a
-                                        // parent operation using the client interface.  The parent
-                                        // operation might not support interrupts.
-                                        cc().curop()->parent() == NULL,
-                                        false);
+        StatusWith<BSONObj> fixed = fixDocumentForInsert( js );
+        uassertStatusOK( fixed.getStatus() );
+        if ( !fixed.getValue().isEmpty() )
+            js = fixed.getValue();
+
+        Collection* collection = ctx.db()->getCollection( ns );
+        if ( !collection ) {
+            collection = ctx.db()->createCollection( ns );
+            verify( collection );
+        }
+
+        StatusWith<DiskLoc> status = collection->insertDocument( js, true );
+        uassertStatusOK( status.getStatus() );
         logOp("i", ns, js);
     }
 
-    NOINLINE_DECL void insertMulti(bool keepGoing, const char *ns, vector<BSONObj>& objs, CurOp& op) {
+    NOINLINE_DECL void insertMulti(Client::Context& ctx, bool keepGoing, const char *ns, vector<BSONObj>& objs, CurOp& op) {
         size_t i;
         for (i=0; i<objs.size(); i++){
             try {
-                checkAndInsert(ns, objs[i]);
+                checkAndInsert(ctx, ns, objs[i]);
                 getDur().commitIfNeeded();
             } catch (const UserException&) {
                 if (!keepGoing || i == objs.size()-1){
@@ -898,6 +909,8 @@ namespace mongo {
         DbMessage d(m);
         const char *ns = d.getns();
         op.debug().ns = ns;
+
+        uassertStatusOK( userAllowedWriteNS( ns ) );
 
         if( !d.moreJSObjs() ) {
             // strange.  should we complain?
@@ -933,9 +946,9 @@ namespace mongo {
                 
                 if (multi.size() > 1) {
                     const bool keepGoing = d.reservedField() & InsertOption_ContinueOnError;
-                    insertMulti(keepGoing, ns, multi, op);
+                    insertMulti(ctx, keepGoing, ns, multi, op);
                 } else {
-                    checkAndInsert(ns, multi[0]);
+                    checkAndInsert(ctx, ns, multi[0]);
                     globalOpCounters.incInsertInWriteLock(1);
                     op.debug().ninserted = 1;
                 }
