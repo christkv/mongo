@@ -61,10 +61,11 @@ var executeTestsUnordered = function() {
 	batch.insert({a:5, b: hugeString});
 	batch.insert({a:6, b: hugeString});
 	var result = batch.execute();
+	printjson(JSON.stringify(result))
 
 	// Basic properties check
-	assert.eq(6, result.n);
-	assert.eq(false, result.hasErrors());	
+	assert.eq(6, result.nInserted);
+	assert.eq(false, result.hasWriteErrors());	
 }
 
 /********************************************************
@@ -118,25 +119,31 @@ var executeTestsOrdered = function() {
 	var result = batch.execute();
 
 	// Basic properties check
-	assert.eq(6, result.n);
-	assert.eq(false, result.hasErrors());
+	assert.eq(6, result.nInserted);
+	assert.eq(false, result.hasWriteErrors());
 
 	// Create unique index
 	coll.dropIndexes();
 	coll.remove({});
 }
 
+var buildVersion = parseInt(db.runCommand({buildInfo:1}).versionArray.slice(0, 3).join(""), 10);
 // Save the existing useWriteCommands function
 var _useWriteCommands = coll.getMongo().useWriteCommands;
 
-// Force the use of useWriteCommands
-coll._mongo.useWriteCommands = function() {
-	return true;
-}
+// 
+// Only execute write command tests if we have > 2.5.5 otherwise 
+// execute the down converted version
+if(buildVersion >= 255) {
+	// Force the use of useWriteCommands
+	coll._mongo.useWriteCommands = function() {
+		return true;
+	}
 
-// Execute tests using legacy operations
-executeTestsUnordered();
-executeTestsOrdered();
+	// Execute tests using legacy operations
+	executeTestsUnordered();
+	executeTestsOrdered();
+}
 
 // Force the use of legacy commands
 coll._mongo.useWriteCommands = function() {

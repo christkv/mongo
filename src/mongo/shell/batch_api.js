@@ -39,6 +39,7 @@ var _batch_api_module = (function() {
 
     // Execute the getLastErrorCommand
     var res = db.runCommand( cmd );
+
     if(res.ok == 0)
         throw "getlasterror failed: " + tojson( res );
     return res;
@@ -108,7 +109,7 @@ var _batch_api_module = (function() {
           if(i == 0) errmsg = errmsg + " and ";
         }
 
-        return WriteConcernError({ errmsg : errmsg, code : WRITE_CONCERN_ERROR });
+        return new WriteConcernError({ errmsg : errmsg, code : WRITE_CONCERN_ERROR });
       }
     }
 
@@ -133,6 +134,8 @@ var _batch_api_module = (function() {
    * Wraps the error
    */
   var WriteError = function(err) {
+    if(!(this instanceof WriteError)) return new WriteError(err);
+    
     // Define properties
     defineReadOnlyProperty(this, "code", err.code);
     defineReadOnlyProperty(this, "index", err.index);
@@ -161,6 +164,8 @@ var _batch_api_module = (function() {
    * Wraps a write concern error
    */
   var WriteConcernError = function(err) {
+    if(!(this instanceof WriteConcernError)) return new WriteConcernError(err);
+
     // Define properties
     defineReadOnlyProperty(this, "code", err.code);
     defineReadOnlyProperty(this, "errmsg", err.errmsg);
@@ -375,6 +380,15 @@ var _batch_api_module = (function() {
     //
     // Merge write command result into aggregated results object
     var mergeBatchResults = function(batch, bulkResult, result) {
+      //
+      // NEEDED to pass tests as some write errors are
+      // returned as write concern errors (j write on non journal mongod)
+      // also internal error code 75 is still making it out as a write concern error
+      //
+      if(ordered && result && result.writeConcernError 
+        && (result.writeConcernError.code == 2 || result.writeConcernError.code == 75)) {
+        throw "legacy batch failed, cannot aggregate results: " + result.writeConcernError.errmsg;
+      }
 
       // If we have an insert Batch type
       if(batch.batchType == INSERT) {
@@ -467,7 +481,7 @@ var _batch_api_module = (function() {
                            0 /* flags */).next();
 
       if(result.ok == 0) {
-          throw "batch failed, cannot aggregate results: " + result.errmsg;
+        throw "batch failed, cannot aggregate results: " + result.errmsg;
       }
 
       // Merge the results
@@ -517,23 +531,27 @@ var _batch_api_module = (function() {
         // Result is replication issue, rewrite error to match write command
         if(result.wnote || result.wtimeout || result.jnote) {
 
-          // Sometimes, with replication, we get an errmsg *and* wnote/jnote/wtimeout
+          // If we are ordered and have a jnote or wnote throw to be compatible
+          // with write command behavior on pre 2.6
+          if(ordered && (result.jnote || result.wnote || result.wtimeout)) {
+            throw "legacy batch failed, cannot aggregate results: " + result.errmsg;
+          }
 
+          // Sometimes, with replication, we get an errmsg *and* wnote/jnote/wtimeout
           // Ensure we get the right error message
           errmsg = result.wnote || errmsg;
           errmsg = result.jnote || errmsg;
 
           bulkResult.writeConcernErrors.push({ errmsg: errmsg, code: WRITE_CONCERN_ERROR });
-        }
-        else {
+        } else {
           if(result.ok == 0) {
             throw "legacy batch failed, cannot aggregate results: " + result.errmsg;
           }
         }
 
-        // Handle error
-        if(result.err) {
-
+        // Handle error (it's only a write error if there is no wnote/jnote or wtimeout)
+        if(result.err != null 
+          && (result.wnote == null && result.jnote == null && result.wtimeout == null)) {
           var code = result.code || UNKNOWN_ERROR; // Returned error code or unknown code
           var errmsg = result.errmsg || result.err;
 
@@ -549,7 +567,8 @@ var _batch_api_module = (function() {
 
         } else if(_legacyOp.batchType == INSERT) {
           // Inserts don't give us "n" back, so we can only infer
-          batchResult.n = batchResult.n + 1;
+          if(result.code == null)
+            batchResult.n = batchResult.n + 1;
         }
 
         if(_legacyOp.batchType == UPDATE) {

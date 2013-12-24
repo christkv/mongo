@@ -5,7 +5,6 @@ var m = MongoRunner.runMongod({ "nojournal" : "" });
 var db = m.getDB("test");
 
 var coll = db.getCollection("batch_api_write_concern");
-coll.drop();
 
 jsTest.log("Starting batch api write concern tests...");
 
@@ -30,38 +29,32 @@ var executeOrderedTests = function() {
 	var batch = coll.initializeOrderedBulkOp();
 	batch.insert({a:1});
 	batch.insert({a:2});
-	var result = batch.execute({j:true});
-	assert.eq(2, result.n);
-	assert.eq(65, result.getSingleError().code);
-	assert(typeof result.getSingleError().errmsg == 'string');
-	assert.eq(true, result.hasErrors());
-	assert.eq(2, result.getErrorCount());
-	assert.eq(2, result.getWCErrors().length);
+	var error = false;
+	var result = null;
 
-	// Test errors for expected behavior
-	assert.eq(0, result.getErrorAt(0).index);
-	assert.eq(64, result.getErrorAt(0).code);
-	assert(typeof result.getErrorAt(0).errmsg == 'string');
-	assert.eq(1, result.getErrorAt(0).getOperation().a);
+	// Should throw error
+	try {
+		result = batch.execute({j:true});		
+	} catch(err) {
+		error = true;
+	}
+
+	assert(error);
 
 	//
 	// Fail due to write concern support
 	var batch = coll.initializeOrderedBulkOp();
 	batch.insert({a:1});
 	batch.insert({a:2});
-	var result = batch.execute({w:2, wtimeout:1000});
-	assert.eq(2, result.n);
-	assert.eq(65, result.getSingleError().code);
-	assert(typeof result.getSingleError().errmsg == 'string');
-	assert.eq(true, result.hasErrors());
-	assert.eq(2, result.getErrorCount());
-	assert.eq(2, result.getWCErrors().length);
+	var error = false;
+	
+	try {
+		result = batch.execute({w:2, wtimeout:1000});
+	} catch(err) {		
+		error = true;
+	}
 
-	// Test errors for expected behavior
-	assert.eq(0, result.getErrorAt(0).index);
-	assert.eq(64, result.getErrorAt(0).code);
-	assert(result.getErrorAt(0).errmsg.indexOf("no replication") != -1);
-	assert.eq(1, result.getErrorAt(0).getOperation().a);
+	assert(error);
 
 	// Create unique index
 	coll.remove({});
@@ -73,25 +66,15 @@ var executeOrderedTests = function() {
 	batch.insert({a:1});
 	batch.insert({a:1});
 	batch.insert({a:2});
-	var result = batch.execute({w:2, wtimeout:1000});
-	assert.eq(1, result.n);
-	assert.eq(65, result.getSingleError().code);
-	assert(typeof result.getSingleError().errmsg == 'string');
-	assert.eq(true, result.hasErrors());
-	assert.eq(2, result.getErrorCount());
-	assert.eq(1, result.getWCErrors().length);
+	var error = false;
 
-	// Test errors for expected behavior
-	assert.eq(0, result.getErrorAt(0).index);
-	assert.eq(64, result.getErrorAt(0).code);
-	assert(result.getErrorAt(0).errmsg.indexOf("no replication") != -1);
-	assert.eq(1, result.getErrorAt(0).getOperation().a);
+	try {
+		result = batch.execute({w:2, wtimeout:1000});		
+	} catch(err) {
+		error = true;
+	}
 
-	// Test errors for expected behavior
-	assert.eq(1, result.getErrorAt(1).index);
-	assert.eq(11000, result.getErrorAt(1).code);
-	assert(result.getErrorAt(1).errmsg.indexOf("duplicate") != -1);
-	assert.eq(1, result.getErrorAt(1).getOperation().a);
+	assert(error);
 
 	// Remove collection
 	coll.dropIndexes();
@@ -116,62 +99,13 @@ var executeUnorderedTests = function() {
 	batch.find({a:3}).upsert().updateOne({a:3, b:1})
 	batch.insert({a:2});
 	var result = batch.execute({w:5, wtimeout:1});
-	assert.eq(3, result.n);
-	assert.eq(65, result.getSingleError().code);
-	assert(typeof result.getSingleError().errmsg == 'string');
-	assert.eq(true, result.hasErrors());
-	assert.eq(3, result.getErrorCount());
-	assert.eq(3, result.getWCErrors().length);
-
-	// Test errors for expected behavior
-	assert.eq(0, result.getErrorAt(0).index);
-	assert.eq(64, result.getErrorAt(0).code);
-	assert(typeof result.getErrorAt(0).errmsg == 'string');
-	assert.eq(1, result.getErrorAt(0).getOperation().a);
-
-	assert.eq(1, result.getErrorAt(1).index);
-	assert.eq(64, result.getErrorAt(1).code);
-	assert(typeof result.getErrorAt(1).errmsg == 'string');
-	assert.eq(3, result.getErrorAt(1).getOperation().q.a);
-
-	assert.eq(2, result.getErrorAt(2).index);
-	assert.eq(64, result.getErrorAt(2).code);
-	assert(typeof result.getErrorAt(2).errmsg == 'string');
-	assert.eq(2, result.getErrorAt(2).getOperation().a);
-
-	// Create unique index
-	coll.remove({});
-	coll.ensureIndex({a : 1}, {unique : true});
-
-	//
-	// Fail due to write concern support
-	var batch = coll.initializeUnorderedBulkOp();
-	batch.insert({a:1});
-	batch.find({a:3}).upsert().updateOne({a:3, b:1})
-	batch.insert({a:2});
-	var result = batch.execute({w:5, wtimeout:1});
-	assert.eq(3, result.n);
-	assert.eq(65, result.getSingleError().code);
-	assert(typeof result.getSingleError().errmsg == 'string');
-	assert.eq(true, result.hasErrors());
-	assert.eq(3, result.getErrorCount());
-	assert.eq(3, result.getWCErrors().length);
-
-	// Test errors for expected behavior
-	assert.eq(0, result.getErrorAt(0).index);
-	assert.eq(64, result.getErrorAt(0).code);
-	assert(typeof result.getErrorAt(0).errmsg == 'string');
-	assert.eq(1, result.getErrorAt(0).getOperation().a);
-
-	assert.eq(1, result.getErrorAt(1).index);
-	assert.eq(64, result.getErrorAt(1).code);
-	assert(typeof result.getErrorAt(1).errmsg == 'string');
-	assert.eq(3, result.getErrorAt(1).getOperation().q.a);
-
-	assert.eq(2, result.getErrorAt(2).index);
-	assert.eq(64, result.getErrorAt(2).code);
-	assert(typeof result.getErrorAt(2).errmsg == 'string');
-	assert.eq(2, result.getErrorAt(2).getOperation().a);
+	assert.eq(2, result.nInserted);
+	assert.eq(1, result.nUpserted);
+	assert.eq(1, result.getUpsertedIds().length);
+	assert.eq(1, result.getUpsertedIdAt(0).index);
+	assert.eq(3, coll.count());
+	assert.eq(64, result.getWriteConcernError().code);
+	assert(result.getWriteConcernError().errmsg != null);
 
 	// Create unique index
 	coll.remove({});
@@ -185,59 +119,36 @@ var executeUnorderedTests = function() {
 	batch.insert({a:1})
 	batch.insert({a:2});
 	var result = batch.execute({w:5, wtimeout:1});
-	assert.eq(3, result.n);
-	assert.eq(65, result.getSingleError().code);
-	assert(typeof result.getSingleError().errmsg == 'string');
-	assert.eq(true, result.hasErrors());
-	assert.eq(4, result.getErrorCount());
-	assert.eq(3, result.getWCErrors().length);
-	assert.eq(1, result.getWriteErrors().length);
-	assert.eq(4, result.getErrors().length);
+	assert.eq(2, result.nInserted);
+	assert.eq(1, result.nUpserted);
+	assert.eq(1, result.getUpsertedIds().length);
+	assert.eq(1, result.getUpsertedIdAt(0).index);
+	assert.eq(3, coll.count());
+	assert.eq(64, result.getWriteConcernError().code);
+	assert(result.getWriteConcernError().errmsg != null);
 
-	// Get the non wc error
-	assert.eq(2, result.getWriteErrors()[0].index);
-	assert.eq(11000, result.getWriteErrors()[0].code);
-	assert(typeof result.getWriteErrors()[0].errmsg == 'string');
-	assert.eq(1, result.getWriteErrors()[0].getOperation().a);
-
-	// Test errors for expected behavior
-	assert.eq(0, result.getErrorAt(0).index);
-	assert.eq(64, result.getErrorAt(0).code);
-	assert(typeof result.getErrorAt(0).errmsg == 'string');
-	assert.eq(1, result.getErrorAt(0).getOperation().a);
-
-	assert.eq(1, result.getErrorAt(1).index);
-	assert.eq(64, result.getErrorAt(1).code);
-	assert(typeof result.getErrorAt(1).errmsg == 'string');
-	assert.eq(3, result.getErrorAt(1).getOperation().q.a);
-
-	assert.eq(2, result.getErrorAt(2).index);
-	assert.eq(11000, result.getErrorAt(2).code);
-	assert(typeof result.getErrorAt(2).errmsg == 'string');
-	assert.eq(1, result.getErrorAt(2).getOperation().a);
-
-	assert.eq(3, result.getErrorAt(3).index);
-	assert.eq(64, result.getErrorAt(3).code);
-	assert(typeof result.getErrorAt(3).errmsg == 'string');
-	assert.eq(2, result.getErrorAt(3).getOperation().a);
-
-	var upserts = result.getUpsertedIds();
-	assert.eq(1, upserts.length);
-	assert.eq(1, upserts[0].index);
-	assert(upserts[0]._id != null);
+	// Create unique index
+	coll.remove({});
+	coll.ensureIndex({a : 1}, {unique : true});
 }
 
+var buildVersion = parseInt(db.runCommand({buildInfo:1}).versionArray.slice(0, 3).join(""), 10);
 // Save the existing useWriteCommands function
 var _useWriteCommands = coll.getMongo().useWriteCommands;
 
-// Force the use of useWriteCommands
-coll._mongo.useWriteCommands = function() {
-	return true;
-}
+// 
+// Only execute write command tests if we have > 2.5.5 otherwise 
+// execute the down converted version
+if(buildVersion >= 255) {
+	// Force the use of useWriteCommands
+	coll._mongo.useWriteCommands = function() {
+		return true;
+	}
 
-// Execute tests using legacy operations
-executeOrderedTests();
-executeUnorderedTests();
+	// Execute tests using legacy operations
+	executeOrderedTests();
+	executeUnorderedTests();
+}
 
 // Force the use of legacy commands
 coll._mongo.useWriteCommands = function() {

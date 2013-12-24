@@ -109,16 +109,22 @@ var executeTests = function() {
 	coll.ensureIndex({a : 1}, {unique : true});
 }
 
+var buildVersion = parseInt(db.runCommand({buildInfo:1}).versionArray.slice(0, 3).join(""), 10);
 // Save the existing useWriteCommands function
 var _useWriteCommands = coll.getMongo().useWriteCommands;
 
-// Force the use of useWriteCommands
-coll._mongo.useWriteCommands = function() {
-	return true;
-}
+// 
+// Only execute write command tests if we have > 2.5.5 otherwise 
+// execute the down converted version
+if(buildVersion >= 255) {
+	// Force the use of useWriteCommands
+	coll._mongo.useWriteCommands = function() {
+		return true;
+	}
 
-// Execute tests using legacy operations
-executeTests();
+	// Execute tests using legacy operations
+	executeTests();
+}
 
 // Force the use of legacy commands
 coll._mongo.useWriteCommands = function() {
