@@ -1253,13 +1253,16 @@ DBCollection.prototype.distinct = function( keyString , query ){
     return res.values;
 }
 
+//
+// CRUD specification aggregation cursor extension
+//
+
 DBCollection.prototype.aggregate = function(pipeline, extraOpts) {
     if (!(pipeline instanceof Array)) {
         // support legacy varargs form. (Also handles db.foo.aggregate())
         pipeline = argumentsToArray(arguments)
         extraOpts = {}
-    }
-    else if (extraOpts === undefined) {
+    } else if (extraOpts === undefined) {
         extraOpts = {};
     }
 
@@ -1269,14 +1272,20 @@ DBCollection.prototype.aggregate = function(pipeline, extraOpts) {
 
     // Ensure handle crud api extraOpts
     for(var name in copy) {
-      if(name == 'batchSize') {
-        if(copy.cursor == null) copy.cursor = {};
-        copy.cursor.batchSize = copy['batchSize'];
-        delete copy['batchSize'];
-      } else if(name == 'useCursor') {
-        if(copy.cursor == null) copy.cursor = {};
-        delete copy['useCursor'];
-      }
+        if(name == 'batchSize') {
+            if(copy.cursor == null) {
+                copy.cursor = {};
+            }
+
+            copy.cursor.batchSize = copy['batchSize'];
+            delete copy['batchSize'];
+        } else if(name == 'useCursor') {
+            if(copy.cursor == null) {
+                copy.cursor = {};
+            }
+
+            delete copy['useCursor'];
+        }
     }
 
     // Assign the cleaned up options
@@ -1298,32 +1307,32 @@ DBCollection.prototype.aggregate = function(pipeline, extraOpts) {
         // if we don't have an out stage, we could run on a secondary
         // so we need to attach readPreference
         return hasOutStage ?
-            this.runCommand("aggregate", cmd) : this.runReadCommand("aggregate", cmd);
+        this.runCommand("aggregate", cmd) : this.runReadCommand("aggregate", cmd);
     }.bind(this);
 
     var res = doAgg(cmd);
 
     if (!res.ok
-            && (res.code == 17020 || res.errmsg == "unrecognized field \"cursor")
-            && !("cursor" in extraOpts)) {
-        // If the command failed because cursors aren't supported and the user didn't explicitly
-        // request a cursor, try again without requesting a cursor.
-        delete cmd.cursor;
+        && (res.code == 17020 || res.errmsg == "unrecognized field \"cursor")
+        && !("cursor" in extraOpts)) {
+            // If the command failed because cursors aren't supported and the user didn't explicitly
+            // request a cursor, try again without requesting a cursor.
+            delete cmd.cursor;
 
-        res = doAgg(cmd);
+            res = doAgg(cmd);
 
-        if ('result' in res && !("cursor" in res)) {
-            // convert old-style output to cursor-style output
-            res.cursor = {ns: '', id: NumberLong(0)};
-            res.cursor.firstBatch = res.result;
-            delete res.result;
+            if ('result' in res && !("cursor" in res)) {
+                // convert old-style output to cursor-style output
+                res.cursor = {ns: '', id: NumberLong(0)};
+                res.cursor.firstBatch = res.result;
+                delete res.result;
+            }
         }
-    }
 
     assert.commandWorked(res, "aggregate failed");
 
     if ("cursor" in res)
-        return new DBCommandCursor(this._mongo, res);
+    return new DBCommandCursor(this._mongo, res);
 
     return res;
 }
@@ -1672,97 +1681,141 @@ DBCollection.prototype.unsetWriteConcern = function() {
 };
 
 /**
- * Perform a bulkWrite operation without a fluent API
- *
- * Legal operation types are
- *
- *  { insertOne: { document: { a: 1 } } }
- *
- *  { updateOne: { filter: {a:2}, update: {$set: {a:2}}, upsert:true } }
- *
- *  { updateMany: { filter: {a:2}, update: {$set: {a:2}}, upsert:true } }
- *
- *  { deleteOne: { filter: {c:1} } }
- *
- *  { deleteMany: { filter: {c:1} } }
- *
- *  { replaceOne: { filter: {c:3}, replacement: {c:4}, upsert:true}}
- *
- * @method
- * @param {object[]} operations Bulk operations to perform.
- * @param {object} [options=null] Optional settings.
- * @param {(number|string)} [options.w=null] The write concern.
- * @param {number} [options.wtimeout=null] The write concern timeout.
- * @param {boolean} [options.j=false] Specify a journal write concern.
- * @return {object}
- */
+* Perform a bulkWrite operation without a fluent API
+*
+* Legal operation types are
+*
+*  { insertOne: { document: { a: 1 } } }
+*
+*  { updateOne: { filter: {a:2}, update: {$set: {a:2}}, upsert:true } }
+*
+*  { updateMany: { filter: {a:2}, update: {$set: {a:2}}, upsert:true } }
+*
+*  { deleteOne: { filter: {c:1} } }
+*
+*  { deleteMany: { filter: {c:1} } }
+*
+*  { replaceOne: { filter: {c:3}, replacement: {c:4}, upsert:true}}
+*
+* @method
+* @param {object[]} operations Bulk operations to perform.
+* @param {object} [options=null] Optional settings.
+* @param {(number|string)} [options.w=null] The write concern.
+* @param {number} [options.wtimeout=null] The write concern timeout.
+* @param {boolean} [options.j=false] Specify a journal write concern.
+* @return {object}
+*/
 DBCollection.prototype.bulkWrite = function(operations, options) {
-  options = options || {};
-  options = shallowClone(options);
-  options.ordered = typeof options.ordered == 'boolean' ? options.ordered : true;
+    options = options || {};
+    var opts = {};
+    Object.extend(opts, options);
+    opts.ordered = typeof opts.ordered == 'boolean' ? opts.ordered : true;
 
-  // Get the write concern
-  var writeConcern = createWriteConcern(this, options);
+    // Get the write concern
+    var writeConcern = createWriteConcern(this, opts);
 
-  // Result
-  var result = {acknowledged: writeConcern && writeConcern.w == 0 ? false: true};
+    // Result
+    var result = {acknowledged: writeConcern && writeConcern.w == 0 ? false: true};
 
-  // Use bulk operation API already in the shell
-  var bulk = options.ordered ? this.initializeOrderedBulkOp() : this.initializeUnorderedBulkOp();
+    // Use bulk operation API already in the shell
+    var bulk = opts.ordered
+        ? this.initializeOrderedBulkOp()
+        : this.initializeUnorderedBulkOp();
 
-  // Contains all inserted _ids
-  var insertedIds = {};
+    // Contains all inserted _ids
+    var insertedIds = {};
 
-  // Index of the operation
-  var index = 0;
+    // Index of the operation
+    var index = 0;
 
-  // For each of the operations we need to add the op to the bulk
-  operations.forEach(function(op) {
-    if(op.insertOne) {
-      if(!op.insertOne.document) throw new Error('insertOne bulkWrite operation expects the document field');
-      if(op.insertOne.document._id == null) op.insertOne.document._id = new ObjectId();
-      // Save the total insertedIds
-      insertedIds[index] = op.insertOne.document._id;
-      // Translate operation to bulk operation
-      bulk.insert(op.insertOne.document);
-    } else if(op.updateOne) {
-      if(!op.updateOne.filter) throw new Error('updateOne bulkWrite operation expects the filter field');
-      if(!op.updateOne.update) throw new Error('updateOne bulkWrite operation expects the update field');
-      // Translate operation to bulk operation
-      var operation = bulk.find(op.updateOne.filter);
-      if(op.updateOne.upsert) operation = operation.upsert();
-      operation.updateOne(op.updateOne.update)
-    } else if(op.updateMany) {
-      if(!op.updateMany.filter) throw new Error('updateMany bulkWrite operation expects the filter field');
-      if(!op.updateMany.update) throw new Error('updateMany bulkWrite operation expects the update field');
-      // Translate operation to bulk operation
-      var operation = bulk.find(op.updateMany.filter);
-      if(op.updateMany.upsert) operation = operation.upsert();
-      operation.update(op.updateMany.update)
-    } else if(op.replaceOne) {
-      if(!op.replaceOne.filter) throw new Error('replaceOne bulkWrite operation expects the filter field');
-      if(!op.replaceOne.replacement) throw new Error('replaceOne bulkWrite operation expects the replacement field');
-      // Translate operation to bulk operation
-      var operation = bulk.find(op.replaceOne.filter);
-      if(op.replaceOne.upsert) operation = operation.upsert();
-      operation.replaceOne(op.replaceOne.replacement)
-    } else if(op.deleteOne) {
-      if(!op.deleteOne.filter) throw new Error('deleteOne bulkWrite operation expects the filter field');
-      // Translate operation to bulk operation
-      bulk.find(op.deleteOne.filter).removeOne();
-    } else if(op.deleteMany) {
-      if(!op.deleteMany.filter) throw new Error('deleteMany bulkWrite operation expects the filter field');
-      // Translate operation to bulk operation
-      bulk.find(op.deleteMany.filter).remove();
-    }
+    // For each of the operations we need to add the op to the bulk
+    operations.forEach(function(op) {
+        if(op.insertOne) {
+            if(!op.insertOne.document) {
+                throw new Error('insertOne bulkWrite operation expects the document field');
+            }
 
-    index = index + 1;
-  });
+            if(op.insertOne.document._id == null) {
+                op.insertOne.document._id = new ObjectId();
+            }
 
-  try {
+            // Save the total insertedIds
+            insertedIds[index] = op.insertOne.document._id;
+            // Translate operation to bulk operation
+            bulk.insert(op.insertOne.document);
+        } else if(op.updateOne) {
+            if(!op.updateOne.filter) {
+                throw new Error('updateOne bulkWrite operation expects the filter field');
+            }
+
+            if(!op.updateOne.update) {
+                throw new Error('updateOne bulkWrite operation expects the update field');
+            }
+
+            // Translate operation to bulk operation
+            var operation = bulk.find(op.updateOne.filter);
+            if(op.updateOne.upsert) {
+                operation = operation.upsert();
+            }
+
+            operation.updateOne(op.updateOne.update)
+        } else if(op.updateMany) {
+            if(!op.updateMany.filter) {
+                throw new Error('updateMany bulkWrite operation expects the filter field');
+            }
+
+            if(!op.updateMany.update) {
+                throw new Error('updateMany bulkWrite operation expects the update field');
+            }
+
+            // Translate operation to bulk operation
+            var operation = bulk.find(op.updateMany.filter);
+            if(op.updateMany.upsert) {
+                operation = operation.upsert();
+            }
+
+            operation.update(op.updateMany.update)
+        } else if(op.replaceOne) {
+            if(!op.replaceOne.filter) {
+                throw new Error('replaceOne bulkWrite operation expects the filter field');
+            }
+
+            if(!op.replaceOne.replacement) {
+                throw new Error('replaceOne bulkWrite operation expects the replacement field');
+            }
+
+            // Translate operation to bulk operation
+            var operation = bulk.find(op.replaceOne.filter);
+            if(op.replaceOne.upsert) {
+                operation = operation.upsert();
+            }
+
+            operation.replaceOne(op.replaceOne.replacement)
+        } else if(op.deleteOne) {
+            if(!op.deleteOne.filter) {
+                throw new Error('deleteOne bulkWrite operation expects the filter field');
+            }
+
+            // Translate operation to bulk operation
+            bulk.find(op.deleteOne.filter).removeOne();
+        } else if(op.deleteMany) {
+            if(!op.deleteMany.filter) {
+                throw new Error('deleteMany bulkWrite operation expects the filter field');
+            }
+
+            // Translate operation to bulk operation
+            bulk.find(op.deleteMany.filter).remove();
+        }
+
+        index = index + 1;
+    });
+
     // Execute bulk operation
     var r = bulk.execute(writeConcern);
-    if(!result.acknowledged) return result;
+    if(!result.acknowledged) {
+        return result;
+    }
+
     result.deletedCount = r.nRemoved;
     result.insertedCount = r.nInserted;
     result.matchedCount = r.nMatched;
@@ -1773,504 +1826,576 @@ DBCollection.prototype.bulkWrite = function(operations, options) {
     // Iterate over all the upserts
     var upserts = r.getUpsertedIds();
     upserts.forEach(function(x) {
-      result.upsertedIds[x.index] = x._id;
+        result.upsertedIds[x.index] = x._id;
     });
 
-    // // Set all the created inserts
-    // result.insertedIds = documents.map(function(x) { return x._id; });
-  } catch(err) {
-    throw err;
-  }
-
-  // Return the result
-  return result;
-}
-
-//
-// CRUD specification collection write method
-//
-
-var shallowClone = function(object) {
-  var r = {};
-  for(var name in object) r[name] = object[name];
-  return r;
-}
-
-var createWriteConcern = function(self, options) {
-  // If writeConcern set, use it, else get from collection (which will inherit from db/mongo)
-  var writeConcern = options.writeConcern ? options.writeConcern : self.getWriteConcern();
-  if(writeConcern instanceof WriteConcern)
-    writeConcern = writeConcern.toJSON();
-
-  if(options.w != null || options.wtimeout != null || options.j != null || options.fsync != null) {
-    writeConcern = {};
-    if(options.w != null) writeConcern.w = options.w;
-    if(options.wtimeout != null) writeConcern.wtimeout = options.wtimeout;
-    if(options.j != null) writeConcern.j = options.j;
-    if(options.fsync != null) writeConcern.fsync = options.fsync;
-  }
-
-  return writeConcern;
+    // Return the result
+    return result;
 }
 
 /**
- * Inserts a single document into MongoDB.
- *
- * @method
- * @param {object} doc Document to insert.
- * @param {object} [options=null] Optional settings.
- * @param {(number|string)} [options.w=null] The write concern.
- * @param {number} [options.wtimeout=null] The write concern timeout.
- * @param {boolean} [options.j=false] Specify a journal write concern.
- * @return {object}
- */
+* Inserts a single document into MongoDB.
+*
+* @method
+* @param {object} doc Document to insert.
+* @param {object} [options=null] Optional settings.
+* @param {(number|string)} [options.w=null] The write concern.
+* @param {number} [options.wtimeout=null] The write concern timeout.
+* @param {boolean} [options.j=false] Specify a journal write concern.
+* @return {object}
+*/
 DBCollection.prototype.insertOne = function(document, options) {
-  options = options || {};
-  options = shallowClone(options);
-  if(document._id == null) document._id = new ObjectId();
+    options = options || {};
+    var opts = {};
+    Object.extend(opts, options);
+    if(document._id == null) document._id = new ObjectId();
 
-  // Get the write concern
-  var writeConcern = createWriteConcern(this, options);
+    // Get the write concern
+    var writeConcern = createWriteConcern(this, opts);
 
-  // Result
-  var result = {acknowledged: writeConcern && writeConcern.w == 0 ? false: true};
+    // Result
+    var result = {acknowledged: writeConcern && writeConcern.w == 0 ? false: true};
 
-  // Use bulk operation API already in the shell
-  var bulk = this.initializeOrderedBulkOp();
-  bulk.insert(document);
+    // Use bulk operation API already in the shell
+    var bulk = this.initializeOrderedBulkOp();
+    bulk.insert(document);
 
-  // Execute insert
-  var r = bulk.execute(writeConcern);
-  if(!result.acknowledged) return result;
-  result.insertedId = document._id;
+    // Execute insert
+    var r = bulk.execute(writeConcern);
+    if(!result.acknowledged) {
+        return result;
+    }
 
-  // Return the result
-  return result;
+    result.insertedId = document._id;
+
+    // Return the result
+    return result;
 }
 
 /**
- * Inserts an array of documents into MongoDB.
- *
- * @method
- * @param {object[]} docs Documents to insert.
- * @param {object} [options=null] Optional settings.
- * @param {(number|string)} [options.w=null] The write concern.
- * @param {number} [options.wtimeout=null] The write concern timeout.
- * @param {boolean} [options.j=false] Specify a journal write concern.
- * @param {boolean} [options.ordered=true] Execute inserts in ordered or unordered fashion.
- * @return {object}
- */
+* Inserts an array of documents into MongoDB.
+*
+* @method
+* @param {object[]} docs Documents to insert.
+* @param {object} [options=null] Optional settings.
+* @param {(number|string)} [options.w=null] The write concern.
+* @param {number} [options.wtimeout=null] The write concern timeout.
+* @param {boolean} [options.j=false] Specify a journal write concern.
+* @param {boolean} [options.ordered=true] Execute inserts in ordered or unordered fashion.
+* @return {object}
+*/
 DBCollection.prototype.insertMany = function(documents, options) {
-  options = options || {};
-  options = shallowClone(options);
-  options.ordered = typeof options.ordered == 'boolean' ? options.ordered : true;
+    options = options || {};
+    var opts = {};
+    Object.extend(opts, options);
+    opts.ordered = typeof opts.ordered == 'boolean' ? opts.ordered : true;
 
-  // Ensure all documents have an _id
-  documents = documents.map(function(x) {
-    if(x._id == null) x._id = new ObjectId();
-    return x;
-  });
+    // Ensure all documents have an _id
+    documents = documents.map(function(x) {
+        if(x._id == null) {
+            x._id = new ObjectId();
+        }
 
-  // Get the write concern
-  var writeConcern = createWriteConcern(this, options);
+        return x;
+    });
 
-  // Result
-  var result = {acknowledged: writeConcern && writeConcern.w == 0 ? false: true};
+    // Get the write concern
+    var writeConcern = createWriteConcern(this, opts);
 
-  // Use bulk operation API already in the shell
-  var bulk = options.ordered ? this.initializeOrderedBulkOp() : this.initializeUnorderedBulkOp();
+    // Result
+    var result = {acknowledged: writeConcern && writeConcern.w == 0 ? false: true};
 
-  // Add all operations to the bulk operation
-  documents.forEach(function(doc) {
-    bulk.insert(doc);
-  });
+    // Use bulk operation API already in the shell
+    var bulk = opts.ordered
+        ? this.initializeOrderedBulkOp()
+        : this.initializeUnorderedBulkOp();
 
-  try {
+    // Add all operations to the bulk operation
+    documents.forEach(function(doc) {
+        bulk.insert(doc);
+    });
+
     // Execute bulk operation
     var r = bulk.execute(writeConcern);
-    if(!result.acknowledged) return result;
+    if(!result.acknowledged) {
+        return result;
+    }
+
     // Set all the created inserts
     result.insertedIds = documents.map(function(x) { return x._id; });
-  } catch(err) {
-    throw err;
-  }
 
-  // Return the result
-  return result;
+    // Return the result
+    return result;
 }
 
 /**
- * Delete a document on MongoDB
- *
- * @method
- * @param {object} filter The Filter used to select the document to remove
- * @param {object} [options=null] Optional settings.
- * @param {(number|string)} [options.w=null] The write concern.
- * @param {number} [options.wtimeout=null] The write concern timeout.
- * @param {boolean} [options.j=false] Specify a journal write concern.
- * @return {object}
- */
+* Delete a document on MongoDB
+*
+* @method
+* @param {object} filter The Filter used to select the document to remove
+* @param {object} [options=null] Optional settings.
+* @param {(number|string)} [options.w=null] The write concern.
+* @param {number} [options.wtimeout=null] The write concern timeout.
+* @param {boolean} [options.j=false] Specify a journal write concern.
+* @return {object}
+*/
 DBCollection.prototype.deleteOne = function(filter, options) {
-  options = options || {};
-  options = shallowClone(options);
+    options = options || {};
+    var opts = {};
+    Object.extend(opts, options);
 
-  // Get the write concern
-  var writeConcern = createWriteConcern(this, options);
+    // Get the write concern
+    var writeConcern = createWriteConcern(this, opts);
 
-  // Result
-  var result = {acknowledged: writeConcern && writeConcern.w == 0 ? false: true};
+    // Result
+    var result = {acknowledged: writeConcern && writeConcern.w == 0 ? false: true};
 
-  // Use bulk operation API already in the shell
-  var bulk = this.initializeOrderedBulkOp();
+    // Use bulk operation API already in the shell
+    var bulk = this.initializeOrderedBulkOp();
 
-  // Add the deleteOne operation
-  bulk.find(filter).removeOne();
+    // Add the deleteOne operation
+    bulk.find(filter).removeOne();
 
-  // Remove the documents
-  var r = bulk.execute(writeConcern);
-  if(!result.acknowledged) return result;
-  result.deletedCount = r.nRemoved;
-  return result;
+    // Remove the documents
+    var r = bulk.execute(writeConcern);
+    if(!result.acknowledged) {
+        return result;
+    }
+
+    result.deletedCount = r.nRemoved;
+    return result;
 }
 
 /**
- * Delete multiple documents on MongoDB
- *
- * @method
- * @param {object} filter The Filter used to select the documents to remove
- * @param {object} [options=null] Optional settings.
- * @param {(number|string)} [options.w=null] The write concern.
- * @param {number} [options.wtimeout=null] The write concern timeout.
- * @param {boolean} [options.j=false] Specify a journal write concern.
- * @return {object}
- */
+* Delete multiple documents on MongoDB
+*
+* @method
+* @param {object} filter The Filter used to select the documents to remove
+* @param {object} [options=null] Optional settings.
+* @param {(number|string)} [options.w=null] The write concern.
+* @param {number} [options.wtimeout=null] The write concern timeout.
+* @param {boolean} [options.j=false] Specify a journal write concern.
+* @return {object}
+*/
 DBCollection.prototype.deleteMany = function(filter, options) {
-  options = options || {};
-  options = shallowClone(options);
+    options = options || {};
+    var opts = {};
+    Object.extend(opts, options);
 
-  // Get the write concern
-  var writeConcern = createWriteConcern(this, options);
+    // Get the write concern
+    var writeConcern = createWriteConcern(this, opts);
 
-  // Result
-  var result = {acknowledged: writeConcern && writeConcern.w == 0 ? false: true};
+    // Result
+    var result = {acknowledged: writeConcern && writeConcern.w == 0 ? false: true};
 
-  // Use bulk operation API already in the shell
-  var bulk = this.initializeOrderedBulkOp();
+    // Use bulk operation API already in the shell
+    var bulk = this.initializeOrderedBulkOp();
 
-  // Add the deleteOne operation
-  bulk.find(filter).remove();
-  // Remove the documents
-  var r = bulk.execute(writeConcern);
-  if(!result.acknowledged) return result;
-  result.deletedCount = r.nRemoved;
-  return result;
+    // Add the deleteOne operation
+    bulk.find(filter).remove();
+    // Remove the documents
+    var r = bulk.execute(writeConcern);
+    if(!result.acknowledged) {
+        return result;
+    }
+
+    result.deletedCount = r.nRemoved;
+    return result;
 }
 
 /**
- * Replace a document on MongoDB
- *
- * @method
- * @param {object} filter The Filter used to select the document to update
- * @param {object} doc The Document that replaces the matching document
- * @param {object} [options=null] Optional settings.
- * @param {boolean} [options.upsert=false] Update operation is an upsert.
- * @param {(number|string)} [options.w=null] The write concern.
- * @param {number} [options.wtimeout=null] The write concern timeout.
- * @param {boolean} [options.j=false] Specify a journal write concern.
- * @return {object}
- */
+* Replace a document on MongoDB
+*
+* @method
+* @param {object} filter The Filter used to select the document to update
+* @param {object} doc The Document that replaces the matching document
+* @param {object} [options=null] Optional settings.
+* @param {boolean} [options.upsert=false] Update operation is an upsert.
+* @param {(number|string)} [options.w=null] The write concern.
+* @param {number} [options.wtimeout=null] The write concern timeout.
+* @param {boolean} [options.j=false] Specify a journal write concern.
+* @return {object}
+*/
 DBCollection.prototype.replaceOne = function(filter, replacement, options) {
-  options = options || {};
-  options = shallowClone(options);
+    options = options || {};
+    var opts = {};
+    Object.extend(opts, options);
 
-  // Get the write concern
-  var writeConcern = createWriteConcern(this, options);
+    // Get the write concern
+    var writeConcern = createWriteConcern(this, opts);
 
-  // Result
-  var result = {acknowledged: writeConcern && writeConcern.w == 0 ? false: true};
+    // Result
+    var result = {acknowledged: writeConcern && writeConcern.w == 0 ? false: true};
 
-  // Use bulk operation API already in the shell
-  var bulk = this.initializeOrderedBulkOp();
+    // Use bulk operation API already in the shell
+    var bulk = this.initializeOrderedBulkOp();
 
-  // Add the deleteOne operation
-  var op = bulk.find(filter);
-  if(options.upsert) op = op.upsert();
-  op.replaceOne(replacement);
+    // Add the deleteOne operation
+    var op = bulk.find(filter);
+    if(opts.upsert) {
+        op = op.upsert();
+    }
 
-  // Remove the documents
-  var r = bulk.execute(writeConcern);
-  if(!result.acknowledged) return result;
-  result.matchedCount = r.nMatched;
-  result.modifiedCount = r.nModified != null ? r.nModified : r.n;
-  if(r.getUpsertedIdAt(0) != null) result.upsertedId = r.getUpsertedIdAt(0)._id;
-  return result;
+    op.replaceOne(replacement);
+
+    // Remove the documents
+    var r = bulk.execute(writeConcern);
+    if(!result.acknowledged) {
+        return result;
+    }
+
+    result.matchedCount = r.nMatched;
+    result.modifiedCount = r.nModified != null ? r.nModified : r.n;
+
+    if(r.getUpsertedIdAt(0) != null) {
+        result.upsertedId = r.getUpsertedIdAt(0)._id;
+    }
+
+    return result;
 }
 
 /**
- * Update a single document on MongoDB
- *
- * @method
- * @param {object} filter The Filter used to select the document to update
- * @param {object} update The update operations to be applied to the document
- * @param {object} [options=null] Optional settings.
- * @param {boolean} [options.upsert=false] Update operation is an upsert.
- * @param {(number|string)} [options.w=null] The write concern.
- * @param {number} [options.wtimeout=null] The write concern timeout.
- * @param {boolean} [options.j=false] Specify a journal write concern.
- * @return {object}
- */
+* Update a single document on MongoDB
+*
+* @method
+* @param {object} filter The Filter used to select the document to update
+* @param {object} update The update operations to be applied to the document
+* @param {object} [options=null] Optional settings.
+* @param {boolean} [options.upsert=false] Update operation is an upsert.
+* @param {(number|string)} [options.w=null] The write concern.
+* @param {number} [options.wtimeout=null] The write concern timeout.
+* @param {boolean} [options.j=false] Specify a journal write concern.
+* @return {object}
+*/
 DBCollection.prototype.updateOne = function(filter, update, options) {
-  options = options || {};
-  options = shallowClone(options);
+    options = options || {};
+    var opts = {};
+    Object.extend(opts, options);
 
-  // Get the write concern
-  var writeConcern = createWriteConcern(this, options);
+    // Get the write concern
+    var writeConcern = createWriteConcern(this, opts);
 
-  // Result
-  var result = {acknowledged: writeConcern && writeConcern.w == 0 ? false: true};
+    // Result
+    var result = {acknowledged: writeConcern && writeConcern.w == 0 ? false: true};
 
-  // Use bulk operation API already in the shell
-  var bulk = this.initializeOrderedBulkOp();
+    // Use bulk operation API already in the shell
+    var bulk = this.initializeOrderedBulkOp();
 
-  // Add the updateOne operation
-  var op = bulk.find(filter);
-  if(options.upsert) op = op.upsert();
-  op.updateOne(update);
+    // Add the updateOne operation
+    var op = bulk.find(filter);
+    if(opts.upsert) {
+        op = op.upsert();
+    }
 
-  // Remove the documents
-  var r = bulk.execute(writeConcern);
-  if(!result.acknowledged) return result;
-  result.matchedCount = r.nMatched;
-  result.modifiedCount = r.nModified != null ? r.nModified : r.n;
-  if(r.getUpsertedIdAt(0) != null) result.upsertedId = r.getUpsertedIdAt(0)._id;
-  return result;
+    op.updateOne(update);
+
+    // Remove the documents
+    var r = bulk.execute(writeConcern);
+    if(!result.acknowledged) {
+        return result;
+    }
+
+    result.matchedCount = r.nMatched;
+    result.modifiedCount = r.nModified != null ? r.nModified : r.n;
+    if(r.getUpsertedIdAt(0) != null) {
+        result.upsertedId = r.getUpsertedIdAt(0)._id;
+    }
+
+    return result;
 }
 
 /**
- * Update multiple documents on MongoDB
- *
- * @method
- * @param {object} filter The Filter used to select the document to update
- * @param {object} update The update operations to be applied to the document
- * @param {object} [options=null] Optional settings.
- * @param {boolean} [options.upsert=false] Update operation is an upsert.
- * @param {(number|string)} [options.w=null] The write concern.
- * @param {number} [options.wtimeout=null] The write concern timeout.
- * @param {boolean} [options.j=false] Specify a journal write concern.
- * @return {object}
- */
+* Update multiple documents on MongoDB
+*
+* @method
+* @param {object} filter The Filter used to select the document to update
+* @param {object} update The update operations to be applied to the document
+* @param {object} [options=null] Optional settings.
+* @param {boolean} [options.upsert=false] Update operation is an upsert.
+* @param {(number|string)} [options.w=null] The write concern.
+* @param {number} [options.wtimeout=null] The write concern timeout.
+* @param {boolean} [options.j=false] Specify a journal write concern.
+* @return {object}
+*/
 DBCollection.prototype.updateMany = function(filter, update, options) {
-  options = options || {};
-  options = shallowClone(options);
+    options = options || {};
+    var opts = {};
+    Object.extend(opts, options);
 
-  // Get the write concern
-  var writeConcern = createWriteConcern(this, options);
+    // Get the write concern
+    var writeConcern = createWriteConcern(this, opts);
 
-  // Result
-  var result = {acknowledged: writeConcern && writeConcern.w == 0 ? false: true};
+    // Result
+    var result = {acknowledged: writeConcern && writeConcern.w == 0 ? false: true};
 
-  // Use bulk operation API already in the shell
-  var bulk = this.initializeOrderedBulkOp();
+    // Use bulk operation API already in the shell
+    var bulk = this.initializeOrderedBulkOp();
 
-  // Add the updateOne operation
-  var op = bulk.find(filter);
-  if(options.upsert) op = op.upsert();
-  op.update(update);
+    // Add the updateOne operation
+    var op = bulk.find(filter);
+    if(opts.upsert) {
+        op = op.upsert();
+    }
 
-  // Remove the documents
-  var r = bulk.execute(writeConcern);
-  if(!result.acknowledged) return result;
-  result.matchedCount = r.nMatched;
-  result.modifiedCount = r.nModified != null ? r.nModified : r.n;
-  if(r.getUpsertedIdAt(0) != null) result.upsertedId = r.getUpsertedIdAt(0)._id;
-  return result;
+    op.update(update);
+
+    // Remove the documents
+    var r = bulk.execute(writeConcern);
+    if(!result.acknowledged) {
+        return result;
+    }
+
+    result.matchedCount = r.nMatched;
+    result.modifiedCount = r.nModified != null ? r.nModified : r.n;
+
+    if(r.getUpsertedIdAt(0) != null) {
+        result.upsertedId = r.getUpsertedIdAt(0)._id;
+    }
+
+    return result;
 }
 
 /**
- * Find a document and delete it in one atomic operation, requires a write lock for the duration of the operation.
- *
- * @method
- * @param {object} filter Document selection filter.
- * @param {object} [options=null] Optional settings.
- * @param {object} [options.projection=null] Limits the fields to return for all matching documents.
- * @param {object} [options.sort=null] Determines which document the operation modifies if the query selects multiple documents.
- * @param {number} [options.maxTimeMS=null] The maximum amount of time to allow the query to run.
- * @return {object}
- */
+* Find a document and delete it in one atomic operation, requires a write lock for the duration of the operation.
+*
+* @method
+* @param {object} filter Document selection filter.
+* @param {object} [options=null] Optional settings.
+* @param {object} [options.projection=null] Limits the fields to return for all matching documents.
+* @param {object} [options.sort=null] Determines which document the operation modifies if the query selects multiple documents.
+* @param {number} [options.maxTimeMS=null] The maximum amount of time to allow the query to run.
+* @return {object}
+*/
 DBCollection.prototype.findOneAndDelete = function(filter, options) {
-  options = options || {};
-  options = shallowClone(options);
-  // Set up the command
-  var cmd = {query: filter, remove: true};
-  if(options.sort) cmd.sort = options.sort;
-  if(options.projection) cmd.fields = options.projection;
-  if(options.maxTimeMS) cmd.maxTimeMS = options.maxTimeMS;
+    options = options || {};
+    var opts = {};
+    Object.extend(opts, options);
+    // Set up the command
+    var cmd = {query: filter, remove: true};
+    if(opts.sort) {
+        cmd.sort = opts.sort;
+    }
 
-  // Get the write concern
-  var writeConcern = createWriteConcern(this, options);
+    if(opts.projection) {
+        cmd.fields = opts.projection;
+    }
 
-  // Setup the write concern
-  if(writeConcern) cmd.writeConcern = writeConcern;
+    if(opts.maxTimeMS) {
+        cmd.maxTimeMS = opts.maxTimeMS;
+    }
 
-  // Execute findAndModify
-  return this.findAndModify(cmd);
+    // Get the write concern
+    var writeConcern = createWriteConcern(this, opts);
+
+    // Setup the write concern
+    if(writeConcern) {
+        cmd.writeConcern = writeConcern;
+    }
+
+    // Execute findAndModify
+    return this.findAndModify(cmd);
 }
 
 /**
- * Find a document and replace it in one atomic operation, requires a write lock for the duration of the operation.
- *
- * @method
- * @param {object} filter Document selection filter.
- * @param {object} replacement Document replacing the matching document.
- * @param {object} [options=null] Optional settings.
- * @param {object} [options.projection=null] Limits the fields to return for all matching documents.
- * @param {object} [options.sort=null] Determines which document the operation modifies if the query selects multiple documents.
- * @param {number} [options.maxTimeMS=null] The maximum amount of time to allow the query to run.
- * @param {boolean} [options.upsert=false] Upsert the document if it does not exist.
- * @param {boolean} [options.returnDocument=false] When true, returns the updated document rather than the original. The default is false.
- * @return {object}
- */
+* Find a document and replace it in one atomic operation, requires a write lock for the duration of the operation.
+*
+* @method
+* @param {object} filter Document selection filter.
+* @param {object} replacement Document replacing the matching document.
+* @param {object} [options=null] Optional settings.
+* @param {object} [options.projection=null] Limits the fields to return for all matching documents.
+* @param {object} [options.sort=null] Determines which document the operation modifies if the query selects multiple documents.
+* @param {number} [options.maxTimeMS=null] The maximum amount of time to allow the query to run.
+* @param {boolean} [options.upsert=false] Upsert the document if it does not exist.
+* @param {boolean} [options.returnDocument=false] When true, returns the updated document rather than the original. The default is false.
+* @return {object}
+*/
 DBCollection.prototype.findOneAndReplace = function(filter, replacement, options) {
-  options = options || {};
-  options = shallowClone(options);
-  // Set up the command
-  var cmd = {query: filter, update: replacement};
-  if(options.sort) cmd.sort = options.sort;
-  if(options.projection) cmd.fields = options.projection;
-  if(options.maxTimeMS) cmd.maxTimeMS = options.maxTimeMS;
+    options = options || {};
+    var opts = {};
+    Object.extend(opts, options);
+    // Set up the command
+    var cmd = {query: filter, update: replacement};
+    if(opts.sort) {
+        cmd.sort = opts.sort;
+    }
 
-  // Set flags
-  cmd.upsert = typeof options.upsert == 'boolean' ? options.upsert : false;
-  cmd.new = typeof options.returnDocument == 'boolean' ? options.returnDocument : false;
+    if(opts.projection) {
+        cmd.fields = opts.projection;
+    }
 
-  // Get the write concern
-  var writeConcern = createWriteConcern(this, options);
+    if(opts.maxTimeMS) {
+        cmd.maxTimeMS = opts.maxTimeMS;
+    }
 
-  // Setup the write concern
-  if(writeConcern) cmd.writeConcern = writeConcern;
+    // Set flags
+    cmd.upsert = typeof opts.upsert == 'boolean' ? opts.upsert : false;
+    cmd.new = typeof opts.returnDocument == 'boolean' ? opts.returnDocument : false;
 
-  // Execute findAndModify
-  return this.findAndModify(cmd);
+    // Get the write concern
+    var writeConcern = createWriteConcern(this, opts);
+
+    // Setup the write concern
+    if(writeConcern) {
+        cmd.writeConcern = writeConcern;
+    }
+
+    // Execute findAndModify
+    return this.findAndModify(cmd);
 }
 
 /**
- * Find a document and update it in one atomic operation, requires a write lock for the duration of the operation.
- *
- * @method
- * @param {object} filter Document selection filter.
- * @param {object} update Update operations to be performed on the document
- * @param {object} [options=null] Optional settings.
- * @param {object} [options.projection=null] Limits the fields to return for all matching documents.
- * @param {object} [options.sort=null] Determines which document the operation modifies if the query selects multiple documents.
- * @param {number} [options.maxTimeMS=null] The maximum amount of time to allow the query to run.
- * @param {boolean} [options.upsert=false] Upsert the document if it does not exist.
- * @param {boolean} [options.returnDocument=false] When true, returns the updated document rather than the original. The default is false.
- * @return {object}
- */
+* Find a document and update it in one atomic operation, requires a write lock for the duration of the operation.
+*
+* @method
+* @param {object} filter Document selection filter.
+* @param {object} update Update operations to be performed on the document
+* @param {object} [options=null] Optional settings.
+* @param {object} [options.projection=null] Limits the fields to return for all matching documents.
+* @param {object} [options.sort=null] Determines which document the operation modifies if the query selects multiple documents.
+* @param {number} [options.maxTimeMS=null] The maximum amount of time to allow the query to run.
+* @param {boolean} [options.upsert=false] Upsert the document if it does not exist.
+* @param {boolean} [options.returnDocument=false] When true, returns the updated document rather than the original. The default is false.
+* @return {object}
+*/
 DBCollection.prototype.findOneAndUpdate = function(filter, update, options) {
-  options = options || {};
-  options = shallowClone(options);
-  // Set up the command
-  var cmd = {query: filter, update: update};
-  if(options.sort) cmd.sort = options.sort;
-  if(options.projection) cmd.fields = options.projection;
-  if(options.maxTimeMS) cmd.maxTimeMS = options.maxTimeMS;
+    options = options || {};
+    var opts = {};
+    Object.extend(opts, options);
 
-  // Set flags
-  cmd.upsert = typeof options.upsert == 'boolean' ? options.upsert : false;
-  cmd.new = typeof options.returnDocument == 'boolean' ? options.returnDocument : false;
+    // Set up the command
+    var cmd = {query: filter, update: update};
+    if(opts.sort) {
+        cmd.sort = opts.sort;
+    }
 
-  // Get the write concern
-  var writeConcern = createWriteConcern(this, options);
+    if(opts.projection) {
+        cmd.fields = opts.projection;
+    }
 
-  // Setup the write concern
-  if(writeConcern) cmd.writeConcern = writeConcern;
+    if(opts.maxTimeMS) {
+        cmd.maxTimeMS = opts.maxTimeMS;
+    }
 
-  // Execute findAndModify
-  return this.findAndModify(cmd);
+    // Set flags
+    cmd.upsert = typeof opts.upsert == 'boolean' ? opts.upsert : false;
+    cmd.new = typeof opts.returnDocument == 'boolean' ? opts.returnDocument : false;
+
+    // Get the write concern
+    var writeConcern = createWriteConcern(this, opts);
+
+    // Setup the write concern
+    if(writeConcern) {
+        cmd.writeConcern = writeConcern;
+    }
+
+    // Execute findAndModify
+    return this.findAndModify(cmd);
 }
 
 //
 // CRUD specification read methods
 //
 
+//
+// CRUD specification read methods
+//
+
 /**
- * Count number of matching documents in the db to a query.
- *
- * @method
- * @param {object} query The query for the count.
- * @param {object} [options=null] Optional settings.
- * @param {boolean} [options.limit=null] The limit of documents to count.
- * @param {boolean} [options.skip=null] The number of documents to skip for the count.
- * @param {string} [options.hint=null] An index name hint for the query.
- * @param {number} [options.maxTimeMS=null] The maximum amount of time to allow the query to run.
- * @return {number}
- */
+* Count number of matching documents in the db to a query.
+*
+* @method
+* @param {object} query The query for the count.
+* @param {object} [options=null] Optional settings.
+* @param {boolean} [options.limit=null] The limit of documents to count.
+* @param {boolean} [options.skip=null] The number of documents to skip for the count.
+* @param {string} [options.hint=null] An index name hint for the query.
+* @param {number} [options.maxTimeMS=null] The maximum amount of time to allow the query to run.
+* @return {number}
+*/
 DBCollection.prototype.count = function(query, options) {
-  options = options || {};
-  options = shallowClone(options);
+    options = options || {};
+    var opts = {};
+    Object.extend(opts, options);
 
-  // Set parameters
-  var skip = typeof options.skip == 'number' ? options.skip : null;
-  var limit = typeof options.limit == 'number' ? options.limit : null;
-  var hint = options.hint;
+    // Set parameters
+    var skip = typeof opts.skip == 'number' ? opts.skip : null;
+    var limit = typeof opts.limit == 'number' ? opts.limit : null;
+    var hint = opts.hint;
 
-  // Execute using command if we have passed in skip/limit or hint
-  if(skip != null || limit != null || hint != null) {
-    // Final query
-    var cmd = {
-        'count': this.getName(), 'query': query
-      , 'fields': null
-    };
+    // Execute using command if we have passed in skip/limit or hint
+    if(skip != null || limit != null || hint != null) {
+        // Final query
+        var cmd = {
+            'count': this.getName(), 'query': query
+            , 'fields': null
+        };
 
-    // Add limit and skip if defined
-    if(typeof skip == 'number') cmd.skip = skip;
-    if(typeof limit == 'number') cmd.limit = limit;
-    if(hint) options.hint = hint;
-    if(options.maxTimeMS) cmd.maxTimeMS = options.maxTimeMS;
+        // Add limit and skip if defined
+        if(typeof skip == 'number') {
+            cmd.skip = skip;
+        }
 
-    // Run the command and return the result
-    return this.runReadCommand(cmd).n;
-  }
+        if(typeof limit == 'number') {
+            cmd.limit = limit;
+        }
 
-  // Return the result of the find
-  return this.find(query).count();
+        if(hint) {
+            opts.hint = hint;
+        }
+
+        if(opts.maxTimeMS) {
+            cmd.maxTimeMS = opts.maxTimeMS;
+        }
+
+        // Run the command and return the result
+        return this.runReadCommand(cmd).n;
+    }
+
+    // Return the result of the find
+    return this.find(query).count();
 }
 
 /**
- * The distinct command returns returns a list of distinct values for the given key across a collection.
- *
- * @method
- * @param {string} key Field of the document to find distinct values for.
- * @param {object} query The query for filtering the set of documents to which we apply the distinct filter.
- * @param {object} [options=null] Optional settings.
- * @param {number} [options.maxTimeMS=null] The maximum amount of time to allow the query to run.
- * @return {object}
- */
+* The distinct command returns returns a list of distinct values for the given key across a collection.
+*
+* @method
+* @param {string} key Field of the document to find distinct values for.
+* @param {object} query The query for filtering the set of documents to which we apply the distinct filter.
+* @param {object} [options=null] Optional settings.
+* @param {number} [options.maxTimeMS=null] The maximum amount of time to allow the query to run.
+* @return {object}
+*/
 DBCollection.prototype.distinct = function(keyString, query, options){
-  options = options || {};
-  options = shallowClone(options);
+    options = options || {};
+    var opts = {};
+    Object.extend(opts, options);
 
-  if(typeof keyString != "string") {
-    throw Error("The first argument to the distinct command must be a string but was a " + keyStringType);
-  }
+    if(typeof keyString != "string") {
+        throw new Error("The first argument to the distinct command must be a string but was a " + keyStringType);
+    }
 
-  if(query != null && typeof query != "object") {
-    throw Error("The query argument to the distinct command must be a document but was a " + queryType);
-  }
+    if(query != null && typeof query != "object") {
+        throw new Error("The query argument to the distinct command must be a document but was a " + queryType);
+    }
 
-  // Distinct command
-  var cmd = { distinct : this.getName() , key : keyString , query : query || {} }
-  // Set maxTimeMS if provided
-  if(options.maxTimeMS) cmd.maxTimeMS = options.maxTimeMS;
+    // Distinct command
+    var cmd = { distinct : this.getName(),
+        key : keyString,
+        query : query || {} }
 
-  // Execute distinct command
-  var res = this._dbReadCommand(cmd);
-  if(!res.ok) {
-    throw Error("distinct failed: " + tojson(res));
-  }
+    // Set maxTimeMS if provided
+    if(opts.maxTimeMS) {
+        cmd.maxTimeMS = opts.maxTimeMS;
+    }
 
-  return res.values;
+    // Execute distinct command
+    var res = this._dbReadCommand(cmd);
+    if(!res.ok) {
+        throw new Error("distinct failed: " + tojson(res));
+    }
+
+    return res.values;
 }
 
 /**

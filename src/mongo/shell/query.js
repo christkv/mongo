@@ -503,99 +503,101 @@ DBQuery.prototype.toString = function(){
 //
 
 /**
- * Get partial results from a mongos if some shards are down (instead of throwing an error).
- *
- * @method
- * @see http://docs.mongodb.org/meta-driver/latest/legacy/mongodb-wire-protocol/#op-query
- * @return {DBQuery}
- */
+* Get partial results from a mongos if some shards are down (instead of throwing an error).
+*
+* @method
+* @see http://docs.mongodb.org/meta-driver/latest/legacy/mongodb-wire-protocol/#op-query
+* @return {DBQuery}
+*/
 DBQuery.prototype.allowPartialResults = function() {
-  this._checkModify();
-  this.addOption(DBQuery.Option.partial);
-  return this;
+    this._checkModify();
+    this.addOption(DBQuery.Option.partial);
+    return this;
 }
 
 /**
- * The server normally times out idle cursors after an inactivity period (10 minutes)
- * to prevent excess memory use. Set this option to prevent that.
- *
- * @method
- * @see http://docs.mongodb.org/meta-driver/latest/legacy/mongodb-wire-protocol/#op-query
- * @return {DBQuery}
- */
+* The server normally times out idle cursors after an inactivity period (10 minutes)
+* to prevent excess memory use. Set this option to prevent that.
+*
+* @method
+* @see http://docs.mongodb.org/meta-driver/latest/legacy/mongodb-wire-protocol/#op-query
+* @return {DBQuery}
+*/
 DBQuery.prototype.noCursorTimeout = function() {
-  this._checkModify();
-  this.addOption(DBQuery.Option.noTimeout);
-  return this;
+    this._checkModify();
+    this.addOption(DBQuery.Option.noTimeout);
+    return this;
 }
 
 /**
- * Internal replication use only - driver should not set
- *
- * @method
- * @see http://docs.mongodb.org/meta-driver/latest/legacy/mongodb-wire-protocol/#op-query
- * @return {DBQuery}
- */
+* Internal replication use only - driver should not set
+*
+* @method
+* @see http://docs.mongodb.org/meta-driver/latest/legacy/mongodb-wire-protocol/#op-query
+* @return {DBQuery}
+*/
 DBQuery.prototype.oplogReplay = function() {
-  this._checkModify();
-  this.addOption(DBQuery.Option.oplogReplay);
-  return this;
+    this._checkModify();
+    this.addOption(DBQuery.Option.oplogReplay);
+    return this;
 }
 
 /**
- * Limits the fields to return for all matching documents.
- *
- * @method
- * @see http://docs.mongodb.org/manual/tutorial/project-fields-from-query-results/
- * @param {object} document Document specifying the projection of the resulting documents.
- * @return {DBQuery}
- */
+* Limits the fields to return for all matching documents.
+*
+* @method
+* @see http://docs.mongodb.org/manual/tutorial/project-fields-from-query-results/
+* @param {object} document Document specifying the projection of the resulting documents.
+* @return {DBQuery}
+*/
 DBQuery.prototype.projection = function(document) {
-  this._checkModify();
-  this._fields = document;
-  return this;
+    this._checkModify();
+    this._fields = document;
+    return this;
 }
 
 /**
- * Specify cursor as a tailable cursor, allowing to specify if it will use awaitData
- *
- * @method
- * @see http://docs.mongodb.org/manual/tutorial/create-tailable-cursor/
- * @param {boolean} [awaitData=true] cursor blocks for a few seconds to wait for data if no documents found.
- * @return {DBQuery}
- */
+* Specify cursor as a tailable cursor, allowing to specify if it will use awaitData
+*
+* @method
+* @see http://docs.mongodb.org/manual/tutorial/create-tailable-cursor/
+* @param {boolean} [awaitData=true] cursor blocks for a few seconds to wait for data if no documents found.
+* @return {DBQuery}
+*/
 DBQuery.prototype.tailable = function(awaitData) {
-  this._checkModify();
-  this.addOption(DBQuery.Option.tailable);
+    this._checkModify();
+    this.addOption(DBQuery.Option.tailable);
 
-  // Set await data if either specifically set or not specified
-  if(awaitData || awaitData == null) {
-    this.addOption(DBQuery.Option.awaitData);
-  }
+    // Set await data if either specifically set or not specified
+    if(awaitData || awaitData == null) {
+        this.addOption(DBQuery.Option.awaitData);
+    }
 
-  return this;
+    return this;
 }
 
 /**
- * Specify a document containing modifiers for the query.
- *
- * @method
- * @see http://docs.mongodb.org/manual/reference/operator/query-modifier/
- * @param {object} document A document containng modifers to apply to the cursor.
- * @return {DBQuery}
- */
+* Specify a document containing modifiers for the query.
+*
+* @method
+* @see http://docs.mongodb.org/manual/reference/operator/query-modifier/
+* @param {object} document A document containng modifers to apply to the cursor.
+* @return {DBQuery}
+*/
 DBQuery.prototype.modifiers = function(document) {
-  this._checkModify();
+    this._checkModify();
 
-  for(var name in document) {
-    if(name[0] != '$') throw Error('All modifiers must start with a $ such as $maxScan or $returnKey');
-  }
+    for(var name in document) {
+        if(name[0] != '$') {
+            throw Error('All modifiers must start with a $ such as $maxScan or $returnKey');
+        }
+    }
 
-  for(var name in document) {
-    this._addSpecial(name, document[name]);
-  }
+    for(var name in document) {
+        this._addSpecial(name, document[name]);
+    }
 
-  return this;
+    return this;
 }
 
 DBQuery.shellBatchSize = 20;
