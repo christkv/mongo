@@ -569,7 +569,7 @@ DBQuery.prototype.tailable = function(awaitData) {
     this.addOption(DBQuery.Option.tailable);
 
     // Set await data if either specifically set or not specified
-    if(awaitData || awaitData == null) {
+    if (awaitData || awaitData == null) {
         this.addOption(DBQuery.Option.awaitData);
     }
 
@@ -581,7 +581,7 @@ DBQuery.prototype.tailable = function(awaitData) {
 *
 * @method
 * @see http://docs.mongodb.org/manual/reference/operator/query-modifier/
-* @param {object} document A document containng modifers to apply to the cursor.
+* @param {object} document A document containing modifers to apply to the cursor.
 * @return {DBQuery}
 */
 DBQuery.prototype.modifiers = function(document) {
@@ -589,7 +589,7 @@ DBQuery.prototype.modifiers = function(document) {
 
     for(var name in document) {
         if(name[0] != '$') {
-            throw Error('All modifiers must start with a $ such as $maxScan or $returnKey');
+            throw new Error('All modifiers must start with a $ such as $maxScan or $returnKey');
         }
     }
 

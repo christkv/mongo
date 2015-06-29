@@ -32,12 +32,15 @@ DBCollection.prototype.help = function () {
     var shortName = this.getName();
     print("DBCollection help");
     print("\tdb." + shortName + ".find().help() - show DBCursor help");
-    print("\tdb." + shortName + ".count()");
+    print("\tdb." + shortName + ".bulkWrite( operations, <optional params> ) - bulk execute write operations, optional parameters are: w, wtimeout, j");
+    print("\tdb." + shortName + ".count( query = {}, <optional params> ) - count the number of documents that matches the query, optional parameters are: limit, skip, hint, maxTimeMS");
     print("\tdb." + shortName + ".copyTo(newColl) - duplicates collection by copying all documents to newColl; no indexes are copied.");
     print("\tdb." + shortName + ".convertToCapped(maxBytes) - calls {convertToCapped:'" + shortName + "', size:maxBytes}} command");
     print("\tdb." + shortName + ".createIndex(keypattern[,options])");
     print("\tdb." + shortName + ".dataSize()");
-    print("\tdb." + shortName + ".distinct( key ) - e.g. db." + shortName + ".distinct( 'x' )");
+    print("\tdb." + shortName + ".deleteOne( filter, <optional params> ) - delete first matching document, optional parameters are: w, wtimeout, j");
+    print("\tdb." + shortName + ".deleteMany( filter, <optional params> ) - delete all matching documents, optional parameters are: w, wtimeout, j");
+    print("\tdb." + shortName + ".distinct( key, query, <optional params> ) - e.g. db." + shortName + ".distinct( 'x' ), optional parameters are: maxTimeMS");
     print("\tdb." + shortName + ".drop() drop the collection");
     print("\tdb." + shortName + ".dropIndex(index) - e.g. db." + shortName + ".dropIndex( \"indexName\" ) or db." + shortName + ".dropIndex( { \"indexKey\" : 1 } )");
     print("\tdb." + shortName + ".dropIndexes()");
@@ -51,16 +54,21 @@ DBCollection.prototype.help = function () {
     print("\tdb." + shortName + ".find(...).skip(n)");
     print("\tdb." + shortName + ".find(...).sort(...)");
     print("\tdb." + shortName + ".findOne([query])");
-    print("\tdb." + shortName + ".findAndModify( { update : ... , remove : bool [, query: {}, sort: {}, 'new': false] } )");
+    print("\tdb." + shortName + ".findOneAndDelete( filter, <optional params> ) - delete first matching document, optional parameters are: projection, sort, maxTimeMS");
+    print("\tdb." + shortName + ".findOneAndReplace( filter, replacement, <optional params> ) - replace first matching document, optional parameters are: projection, sort, maxTimeMS, upsert, returnDocument");
+    print("\tdb." + shortName + ".findOneAndUpdate( filter, update, <optional params> ) - update first matching document, optional parameters are: projection, sort, maxTimeMS, upsert, returnDocument");
     print("\tdb." + shortName + ".getDB() get DB object associated with collection");
     print("\tdb." + shortName + ".getPlanCache() get query plan cache associated with collection");
     print("\tdb." + shortName + ".getIndexes()");
     print("\tdb." + shortName + ".group( { key : ..., initial: ..., reduce : ...[, cond: ...] } )");
     // print("\tdb." + shortName + ".indexStats({expandNodes: [<expanded child numbers>}, <detailed: t/f>) - output aggregate/per-depth btree bucket stats");
     print("\tdb." + shortName + ".insert(obj)");
+    print("\tdb." + shortName + ".insertOne( obj, <optional params> ) - insert a document, optional parameters are: w, wtimeout, j");
+    print("\tdb." + shortName + ".insertMany( [objects], <optional params> ) - insert multiple documents, optional parameters are: w, wtimeout, j");
     print("\tdb." + shortName + ".mapReduce( mapFunction , reduceFunction , <optional params> )");
     print("\tdb." + shortName + ".aggregate( [pipeline], <optional params> ) - performs an aggregation on a collection; returns a cursor");
     print("\tdb." + shortName + ".remove(query)");
+    print("\tdb." + shortName + ".replaceOne( filter, replacement, <optional params> ) - replace the first matching document, optional parameters are: upsert, w, wtimeout, j");
     print("\tdb." + shortName + ".renameCollection( newName , <dropTarget> ) renames the collection.");
     print("\tdb." + shortName + ".runCommand( name , <options> ) runs a db command with the given name where the first param is the collection name");
     print("\tdb." + shortName + ".save(obj)");
@@ -71,7 +79,9 @@ DBCollection.prototype.help = function () {
     print("\tdb." + shortName + ".storageSize() - includes free space allocated to this collection");
     print("\tdb." + shortName + ".totalIndexSize() - size in bytes of all the indexes");
     print("\tdb." + shortName + ".totalSize() - storage allocated for all data and indexes");
-    print("\tdb." + shortName + ".update(query, object[, upsert_bool, multi_bool]) - instead of two flags, you can pass an object with fields: upsert, multi");
+    print("\tdb." + shortName + ".update( query, object[, upsert_bool, multi_bool] ) - instead of two flags, you can pass an object with fields: upsert, multi");
+    print("\tdb." + shortName + ".updateOne( filter, update, <optional params> ) - update the first matching document, optional parameters are: upsert, w, wtimeout, j");
+    print("\tdb." + shortName + ".updateMany( filter, update, <optional params> ) - update all matching documents, optional parameters are: upsert, w, wtimeout, j");
     print("\tdb." + shortName + ".validate( <full> ) - SLOW");;
     // print("\tdb." + shortName + ".getIndexStats({expandNodes: [<expanded child numbers>}, <detailed: t/f>) - same as .indexStats but prints a human readable summary of the output");
     print("\tdb." + shortName + ".getShardVersion() - only for use with sharding");
@@ -1057,10 +1067,6 @@ DBCollection.prototype.getIndexKeys = function(){
 }
 
 
-DBCollection.prototype.count = function( x ){
-    return this.find( x ).count();
-}
-
 DBCollection.prototype.hashAllDocs = function() {
     var cmd = { dbhash : 1,
                 collections : [ this._shortName ] };
@@ -1240,29 +1246,29 @@ DBCollection.prototype.isCapped = function(){
 // CRUD specification aggregation cursor extension
 //
 
-DBCollection.prototype.aggregate = function(pipeline, extraOpts) {
+DBCollection.prototype.aggregate = function(pipeline, aggregateOptions) {
     if (!(pipeline instanceof Array)) {
         // support legacy varargs form. (Also handles db.foo.aggregate())
         pipeline = argumentsToArray(arguments)
-        extraOpts = {}
-    } else if (extraOpts === undefined) {
-        extraOpts = {};
+        aggregateOptions = {}
+    } else if (aggregateOptions === undefined) {
+        aggregateOptions = {};
     }
 
-    // Copy the extraOpts
-    var copy = Object.extend({}, extraOpts);
+    // Copy the aggregateOptions
+    var copy = Object.extend({}, aggregateOptions);
 
-    // Ensure handle crud api extraOpts
-    for(var name in copy) {
-        if(name == 'batchSize') {
-            if(copy.cursor == null) {
+    // Ensure handle crud API aggregateOptions
+    for (var name in copy) {
+        if (name == 'batchSize') {
+            if (copy.cursor == null) {
                 copy.cursor = {};
             }
 
             copy.cursor.batchSize = copy['batchSize'];
             delete copy['batchSize'];
-        } else if(name == 'useCursor') {
-            if(copy.cursor == null) {
+        } else if (name == 'useCursor') {
+            if (copy.cursor == null) {
                 copy.cursor = {};
             }
 
@@ -1271,10 +1277,10 @@ DBCollection.prototype.aggregate = function(pipeline, extraOpts) {
     }
 
     // Assign the cleaned up options
-    extraOpts = copy;
-    // Crreate the initial command document
+    aggregateOptions = copy;
+    // Create the initial command document
     var cmd = {pipeline: pipeline};
-    Object.extend(cmd, extraOpts);
+    Object.extend(cmd, aggregateOptions);
 
     if (!('cursor' in cmd)) {
         // implicitly use cursors
@@ -1289,14 +1295,14 @@ DBCollection.prototype.aggregate = function(pipeline, extraOpts) {
         // if we don't have an out stage, we could run on a secondary
         // so we need to attach readPreference
         return hasOutStage ?
-        this.runCommand("aggregate", cmd) : this.runReadCommand("aggregate", cmd);
+            this.runCommand("aggregate", cmd) : this.runReadCommand("aggregate", cmd);
     }.bind(this);
 
     var res = doAgg(cmd);
 
     if (!res.ok
         && (res.code == 17020 || res.errmsg == "unrecognized field \"cursor")
-        && !("cursor" in extraOpts)) {
+        && !("cursor" in aggregateOptions)) {
             // If the command failed because cursors aren't supported and the user didn't explicitly
             // request a cursor, try again without requesting a cursor.
             delete cmd.cursor;
@@ -1313,8 +1319,9 @@ DBCollection.prototype.aggregate = function(pipeline, extraOpts) {
 
     assert.commandWorked(res, "aggregate failed");
 
-    if ("cursor" in res)
-    return new DBCommandCursor(this._mongo, res);
+    if ("cursor" in res) {
+        return new DBCommandCursor(this._mongo, res);
+    }
 
     return res;
 }
@@ -1662,41 +1669,49 @@ DBCollection.prototype.unsetWriteConcern = function() {
     delete this._writeConcern;
 };
 
-var createWriteConcern = function(self, options) {
+DBCollection.prototype._createWriteConcern = function(options) {
     // If writeConcern set, use it, else get from collection (which will inherit from db/mongo)
-    var writeConcern = options.writeConcern
-        ? options.writeConcern
-        : self.getWriteConcern();
+    var writeConcern = options.writeConcern || this.getWriteConcern();
+    var writeConcerns = ['w', 'wtimeout', 'j', 'fsync'];
 
-    if(writeConcern instanceof WriteConcern) {
+    if (writeConcern instanceof WriteConcern) {
         writeConcern = writeConcern.toJSON();
     }
 
-    if(options.w != null
+    // Only merge in write concern options if at least one is specified in options
+    if (options.w != null
         || options.wtimeout != null
         || options.j != null
         || options.fsync != null) {
         writeConcern = {};
 
-        if(options.w != null) {
-            writeConcern.w = options.w;
-        }
-
-        if(options.wtimeout != null) {
-            writeConcern.wtimeout = options.wtimeout;
-        }
-
-        if(options.j != null) {
-            writeConcern.j = options.j;
-        }
-
-        if(options.fsync != null) {
-            writeConcern.fsync = options.fsync;
-        }
+        writeConcerns.forEach(function(wc) {
+            if (options[wc] != null) {
+                writeConcern[wc] = options[wc];
+            }
+        });
     }
 
     return writeConcern;
 }
+
+/**
+ * @return {Object} a new document with an _id: ObjectId if _id is not present.
+ *     Otherwise, returns the same object passed.
+ */
+DBCollection.prototype.addIdIfNeeded = function(obj) {
+    if ( typeof( obj._id ) == "undefined" && ! Array.isArray( obj ) ){
+        var tmp = obj; // don't want to modify input
+        obj = {_id: new ObjectId()};
+
+        for (var key in tmp){
+            obj[key] = tmp[key];
+        }
+    }
+
+    return obj;
+}
+
 
 /**
 * Perform a bulkWrite operation without a fluent API
@@ -1724,43 +1739,39 @@ var createWriteConcern = function(self, options) {
 * @return {object}
 */
 DBCollection.prototype.bulkWrite = function(operations, options) {
+    var self = this;
     options = options || {};
     var opts = {};
     Object.extend(opts, options);
     opts.ordered = (typeof opts.ordered == 'boolean') ? opts.ordered : true;
 
     // Get the write concern
-    var writeConcern = createWriteConcern(this, opts);
+    var writeConcern = this._createWriteConcern(opts);
 
     // Result
     var result = {acknowledged: (writeConcern && writeConcern.w == 0) ? false: true};
 
     // Use bulk operation API already in the shell
-    var bulk = opts.ordered
+    var bulkOp = opts.ordered
         ? this.initializeOrderedBulkOp()
         : this.initializeUnorderedBulkOp();
 
     // Contains all inserted _ids
     var insertedIds = {};
 
-    // Index of the operation
-    var index = 0;
-
     // For each of the operations we need to add the op to the bulk
-    operations.forEach(function(op) {
+    operations.forEach(function(op, index) {
         if(op.insertOne) {
             if(!op.insertOne.document) {
                 throw new Error('insertOne bulkWrite operation expects the document field');
             }
 
-            if(op.insertOne.document._id == null) {
-                op.insertOne.document._id = new ObjectId();
-            }
-
+            // Add _id ObjectId if needed
+            op.insertOne.document = addIdIfNeeded(op.insertOne.document);
             // InsertedIds is a map of [originalInsertOrderIndex] = document._id
             insertedIds[index] = op.insertOne.document._id;
             // Translate operation to bulk operation
-            bulk.insert(op.insertOne.document);
+            bulkOp.insert(op.insertOne.document);
         } else if(op.updateOne) {
             if(!op.updateOne.filter) {
                 throw new Error('updateOne bulkWrite operation expects the filter field');
@@ -1771,7 +1782,7 @@ DBCollection.prototype.bulkWrite = function(operations, options) {
             }
 
             // Translate operation to bulk operation
-            var operation = bulk.find(op.updateOne.filter);
+            var operation = bulkOp.find(op.updateOne.filter);
             if(op.updateOne.upsert) {
                 operation = operation.upsert();
             }
@@ -1787,7 +1798,7 @@ DBCollection.prototype.bulkWrite = function(operations, options) {
             }
 
             // Translate operation to bulk operation
-            var operation = bulk.find(op.updateMany.filter);
+            var operation = bulkOp.find(op.updateMany.filter);
             if(op.updateMany.upsert) {
                 operation = operation.upsert();
             }
@@ -1802,8 +1813,8 @@ DBCollection.prototype.bulkWrite = function(operations, options) {
                 throw new Error('replaceOne bulkWrite operation expects the replacement field');
             }
 
-            // Translate operation to bulk operation
-            var operation = bulk.find(op.replaceOne.filter);
+            // Translate operation to bulkOp operation
+            var operation = bulkOp.find(op.replaceOne.filter);
             if(op.replaceOne.upsert) {
                 operation = operation.upsert();
             }
@@ -1814,35 +1825,35 @@ DBCollection.prototype.bulkWrite = function(operations, options) {
                 throw new Error('deleteOne bulkWrite operation expects the filter field');
             }
 
-            // Translate operation to bulk operation
-            bulk.find(op.deleteOne.filter).removeOne();
+            // Translate operation to bulkOp operation
+            bulkOp.find(op.deleteOne.filter).removeOne();
         } else if(op.deleteMany) {
             if(!op.deleteMany.filter) {
                 throw new Error('deleteMany bulkWrite operation expects the filter field');
             }
 
-            // Translate operation to bulk operation
-            bulk.find(op.deleteMany.filter).remove();
+            // Translate operation to bulkOp operation
+            bulkOp.find(op.deleteMany.filter).remove();
         }
 
         index = index + 1;
     });
 
-    // Execute bulk operation
-    var r = bulk.execute(writeConcern);
+    // Execute bulkOp operation
+    var response = bulkOp.execute(writeConcern);
     if(!result.acknowledged) {
         return result;
     }
 
-    result.deletedCount = r.nRemoved;
-    result.insertedCount = r.nInserted;
-    result.matchedCount = r.nMatched;
-    result.upsertedCount = r.nUpserted;
+    result.deletedCount = response.nRemoved;
+    result.insertedCount = response.nInserted;
+    result.matchedCount = response.nMatched;
+    result.upsertedCount = response.nUpserted;
     result.insertedIds = insertedIds;
     result.upsertedIds = {};
 
     // Iterate over all the upserts
-    var upserts = r.getUpsertedIds();
+    var upserts = response.getUpsertedIds();
     upserts.forEach(function(x) {
         result.upsertedIds[x.index] = x._id;
     });
@@ -1866,10 +1877,12 @@ DBCollection.prototype.insertOne = function(document, options) {
     options = options || {};
     var opts = {};
     Object.extend(opts, options);
-    if(document._id == undefined) document._id = new ObjectId();
+
+    // Add _id ObjectId if needed
+    document = addIdIfNeeded(document);
 
     // Get the write concern
-    var writeConcern = createWriteConcern(this, opts);
+    var writeConcern = this._createWriteConcern(opts);
 
     // Result
     var result = {acknowledged: (writeConcern && writeConcern.w == 0) ? false: true};
@@ -1880,10 +1893,11 @@ DBCollection.prototype.insertOne = function(document, options) {
 
     // Execute insert
     var r = bulk.execute(writeConcern);
-    if(!result.acknowledged) {
+    if (!result.acknowledged) {
         return result;
     }
 
+    // Set the inserted id
     result.insertedId = document._id;
 
     // Return the result
@@ -1904,21 +1918,16 @@ DBCollection.prototype.insertOne = function(document, options) {
 */
 DBCollection.prototype.insertMany = function(documents, options) {
     options = options || {};
-    var opts = {};
-    Object.extend(opts, options);
+    var opts = Object.extend({}, options || {});
     opts.ordered = (typeof opts.ordered == 'boolean') ? opts.ordered : true;
 
     // Ensure all documents have an _id
     documents = documents.map(function(x) {
-        if(x._id == undefined) {
-            x._id = new ObjectId();
-        }
-
-        return x;
+        return addIdIfNeeded(x);
     });
 
     // Get the write concern
-    var writeConcern = createWriteConcern(this, opts);
+    var writeConcern = this._createWriteConcern(opts);
 
     // Result
     var result = {acknowledged: (writeConcern && writeConcern.w == 0) ? false: true};
@@ -1935,12 +1944,14 @@ DBCollection.prototype.insertMany = function(documents, options) {
 
     // Execute bulk operation
     var r = bulk.execute(writeConcern);
-    if(!result.acknowledged) {
+    if (!result.acknowledged) {
         return result;
     }
 
     // Set all the created inserts
-    result.insertedIds = documents.map(function(x) { return x._id; });
+    result.insertedIds = documents.map(function(x) {
+      return x._id;
+    });
 
     // Return the result
     return result;
@@ -1950,7 +1961,7 @@ DBCollection.prototype.insertMany = function(documents, options) {
 * Delete a document on MongoDB
 *
 * @method
-* @param {object} filter The Filter used to select the document to remove
+* @param {object} filter The filter used to select the document to remove
 * @param {object} [options=null] Optional settings.
 * @param {(number|string)} [options.w=null] The write concern.
 * @param {number} [options.wtimeout=null] The write concern timeout.
@@ -1959,11 +1970,10 @@ DBCollection.prototype.insertMany = function(documents, options) {
 */
 DBCollection.prototype.deleteOne = function(filter, options) {
     options = options || {};
-    var opts = {};
-    Object.extend(opts, options);
+    var opts = Object.extend({}, options || {});
 
     // Get the write concern
-    var writeConcern = createWriteConcern(this, opts);
+    var writeConcern = this._createWriteConcern(opts);
 
     // Result
     var result = {acknowledged: (writeConcern && writeConcern.w == 0) ? false: true};
@@ -1976,7 +1986,7 @@ DBCollection.prototype.deleteOne = function(filter, options) {
 
     // Remove the first document that matches the selector
     var r = bulk.execute(writeConcern);
-    if(!result.acknowledged) {
+    if (!result.acknowledged) {
         return result;
     }
 
@@ -1997,11 +2007,10 @@ DBCollection.prototype.deleteOne = function(filter, options) {
 */
 DBCollection.prototype.deleteMany = function(filter, options) {
     options = options || {};
-    var opts = {};
-    Object.extend(opts, options);
+    var opts = Object.extend({}, options || {});
 
     // Get the write concern
-    var writeConcern = createWriteConcern(this, opts);
+    var writeConcern = this._createWriteConcern(opts);
 
     // Result
     var result = {acknowledged: (writeConcern && writeConcern.w == 0) ? false: true};
@@ -2014,7 +2023,7 @@ DBCollection.prototype.deleteMany = function(filter, options) {
 
     // Remove all documents that matche the selector
     var r = bulk.execute(writeConcern);
-    if(!result.acknowledged) {
+    if (!result.acknowledged) {
         return result;
     }
 
@@ -2037,11 +2046,10 @@ DBCollection.prototype.deleteMany = function(filter, options) {
 */
 DBCollection.prototype.replaceOne = function(filter, replacement, options) {
     options = options || {};
-    var opts = {};
-    Object.extend(opts, options);
+    var opts = Object.extend({}, options || {});
 
     // Get the write concern
-    var writeConcern = createWriteConcern(this, opts);
+    var writeConcern = this._createWriteConcern(opts);
 
     // Result
     var result = {acknowledged: (writeConcern && writeConcern.w == 0) ? false: true};
@@ -2051,7 +2059,7 @@ DBCollection.prototype.replaceOne = function(filter, replacement, options) {
 
     // Add the deleteOne operation
     var op = bulk.find(filter);
-    if(opts.upsert) {
+    if (opts.upsert) {
         op = op.upsert();
     }
 
@@ -2059,15 +2067,15 @@ DBCollection.prototype.replaceOne = function(filter, replacement, options) {
 
     // Replace the document
     var r = bulk.execute(writeConcern);
-    if(!result.acknowledged) {
+    if (!result.acknowledged) {
         return result;
     }
 
     result.matchedCount = r.nMatched;
-    result.modifiedCount = r.nModified != null ? r.nModified : r.n;
+    result.modifiedCount = (r.nModified != null) ? r.nModified : r.n;
 
-    if(r.getUpsertedIdAt(0) != null) {
-        result.upsertedId = r.getUpsertedIdAt(0)._id;
+    if (r.upserted.length > 0)
+        result.upsertedId = r.getUpsertedId()._id;
     }
 
     return result;
@@ -2088,11 +2096,10 @@ DBCollection.prototype.replaceOne = function(filter, replacement, options) {
 */
 DBCollection.prototype.updateOne = function(filter, update, options) {
     options = options || {};
-    var opts = {};
-    Object.extend(opts, options);
+    var opts = Object.extend({}, options || {});
 
     // Get the write concern
-    var writeConcern = createWriteConcern(this, opts);
+    var writeConcern = this._createWriteConcern(opts);
 
     // Result
     var result = {acknowledged: (writeConcern && writeConcern.w == 0) ? false: true};
@@ -2102,7 +2109,7 @@ DBCollection.prototype.updateOne = function(filter, update, options) {
 
     // Add the updateOne operation
     var op = bulk.find(filter);
-    if(opts.upsert) {
+    if (opts.upsert) {
         op = op.upsert();
     }
 
@@ -2110,14 +2117,15 @@ DBCollection.prototype.updateOne = function(filter, update, options) {
 
     // Update the first document that matches the selector
     var r = bulk.execute(writeConcern);
-    if(!result.acknowledged) {
+    if (!result.acknowledged) {
         return result;
     }
 
     result.matchedCount = r.nMatched;
-    result.modifiedCount = r.nModified != null ? r.nModified : r.n;
-    if(r.getUpsertedIdAt(0) != null) {
-        result.upsertedId = r.getUpsertedIdAt(0)._id;
+    result.modifiedCount = (r.nModified != null) ? r.nModified : r.n;
+
+    if (r.upserted.length > 0)
+        result.upsertedId = r.getUpsertedId()._id;
     }
 
     return result;
@@ -2138,11 +2146,10 @@ DBCollection.prototype.updateOne = function(filter, update, options) {
 */
 DBCollection.prototype.updateMany = function(filter, update, options) {
     options = options || {};
-    var opts = {};
-    Object.extend(opts, options);
+    var opts = Object.extend({}, options || {});
 
     // Get the write concern
-    var writeConcern = createWriteConcern(this, opts);
+    var writeConcern = this._createWriteConcern(opts);
 
     // Result
     var result = {acknowledged: (writeConcern && writeConcern.w == 0) ? false: true};
@@ -2152,7 +2159,7 @@ DBCollection.prototype.updateMany = function(filter, update, options) {
 
     // Add the updateOne operation
     var op = bulk.find(filter);
-    if(opts.upsert) {
+    if (opts.upsert) {
         op = op.upsert();
     }
 
@@ -2160,22 +2167,23 @@ DBCollection.prototype.updateMany = function(filter, update, options) {
 
     // Update all documents that match the selector
     var r = bulk.execute(writeConcern);
-    if(!result.acknowledged) {
+    if (!result.acknowledged) {
         return result;
     }
 
     result.matchedCount = r.nMatched;
-    result.modifiedCount = r.nModified != null ? r.nModified : r.n;
+    result.modifiedCount = (r.nModified != null) ? r.nModified : r.n;
 
-    if(r.getUpsertedIdAt(0) != null) {
-        result.upsertedId = r.getUpsertedIdAt(0)._id;
+    if (r.upserted.length > 0)
+        result.upsertedId = r.getUpsertedId()._id;
     }
 
     return result;
 }
 
 /**
-* Find a document and delete it in one atomic operation, requires a write lock for the duration of the operation.
+* Find a document and delete it in one atomic operation,
+* requires a write lock for the duration of the operation.
 *
 * @method
 * @param {object} filter Document selection filter.
@@ -2187,27 +2195,27 @@ DBCollection.prototype.updateMany = function(filter, update, options) {
 */
 DBCollection.prototype.findOneAndDelete = function(filter, options) {
     options = options || {};
-    var opts = {};
-    Object.extend(opts, options);
+    var opts = Object.extend({}, options || {});
     // Set up the command
     var cmd = {query: filter, remove: true};
-    if(opts.sort) {
+
+    if (opts.sort) {
         cmd.sort = opts.sort;
     }
 
-    if(opts.projection) {
+    if (opts.projection) {
         cmd.fields = opts.projection;
     }
 
-    if(opts.maxTimeMS) {
+    if (opts.maxTimeMS) {
         cmd.maxTimeMS = opts.maxTimeMS;
     }
 
     // Get the write concern
-    var writeConcern = createWriteConcern(this, opts);
+    var writeConcern = this._createWriteConcern(opts);
 
     // Setup the write concern
-    if(writeConcern) {
+    if (writeConcern) {
         cmd.writeConcern = writeConcern;
     }
 
@@ -2231,19 +2239,18 @@ DBCollection.prototype.findOneAndDelete = function(filter, options) {
 */
 DBCollection.prototype.findOneAndReplace = function(filter, replacement, options) {
     options = options || {};
-    var opts = {};
-    Object.extend(opts, options);
+    var opts = Object.extend({}, options || {});
     // Set up the command
     var cmd = {query: filter, update: replacement};
-    if(opts.sort) {
+    if (opts.sort) {
         cmd.sort = opts.sort;
     }
 
-    if(opts.projection) {
+    if (opts.projection) {
         cmd.fields = opts.projection;
     }
 
-    if(opts.maxTimeMS) {
+    if (opts.maxTimeMS) {
         cmd.maxTimeMS = opts.maxTimeMS;
     }
 
@@ -2252,10 +2259,10 @@ DBCollection.prototype.findOneAndReplace = function(filter, replacement, options
     cmd.new = (typeof opts.returnDocument == 'boolean') ? opts.returnDocument : false;
 
     // Get the write concern
-    var writeConcern = createWriteConcern(this, opts);
+    var writeConcern = this._createWriteConcern(opts);
 
     // Setup the write concern
-    if(writeConcern) {
+    if (writeConcern) {
         cmd.writeConcern = writeConcern;
     }
 
@@ -2279,20 +2286,19 @@ DBCollection.prototype.findOneAndReplace = function(filter, replacement, options
 */
 DBCollection.prototype.findOneAndUpdate = function(filter, update, options) {
     options = options || {};
-    var opts = {};
-    Object.extend(opts, options);
+    var opts = Object.extend({}, options || {});
 
     // Set up the command
     var cmd = {query: filter, update: update};
-    if(opts.sort) {
+    if (opts.sort) {
         cmd.sort = opts.sort;
     }
 
-    if(opts.projection) {
+    if (opts.projection) {
         cmd.fields = opts.projection;
     }
 
-    if(opts.maxTimeMS) {
+    if (opts.maxTimeMS) {
         cmd.maxTimeMS = opts.maxTimeMS;
     }
 
@@ -2301,20 +2307,16 @@ DBCollection.prototype.findOneAndUpdate = function(filter, update, options) {
     cmd.new = (typeof opts.returnDocument == 'boolean') ? opts.returnDocument : false;
 
     // Get the write concern
-    var writeConcern = createWriteConcern(this, opts);
+    var writeConcern = this._createWriteConcern(opts);
 
     // Setup the write concern
-    if(writeConcern) {
+    if (writeConcern) {
         cmd.writeConcern = writeConcern;
     }
 
     // Execute findAndModify
     return this.findAndModify(cmd);
 }
-
-//
-// CRUD specification read methods
-//
 
 //
 // CRUD specification read methods
@@ -2334,8 +2336,7 @@ DBCollection.prototype.findOneAndUpdate = function(filter, update, options) {
 */
 DBCollection.prototype.count = function(query, options) {
     options = options || {};
-    var opts = {};
-    Object.extend(opts, options);
+    var opts = Object.extend({}, options || {});
 
     // Set parameters
     var skip = (typeof opts.skip == 'number') ? opts.skip : null;
@@ -2343,32 +2344,36 @@ DBCollection.prototype.count = function(query, options) {
     var hint = opts.hint;
 
     // Execute using command if we have passed in skip/limit or hint
-    if(skip != null || limit != null || hint != null) {
+    if (skip != null || limit != null || hint != null) {
         // Final query
         var cmd = {
             'count': this.getName(), 'query': query
-            , 'fields': null
         };
 
         // Add limit and skip if defined
-        if(typeof skip == 'number') {
+        if (typeof skip == 'number') {
+            throw new Error('skip option must be a number');
             cmd.skip = skip;
         }
 
-        if(typeof limit == 'number') {
+        if (typeof limit == 'number') {
+            throw new Error('limit option must be a number');
             cmd.limit = limit;
         }
 
-        if(hint) {
+        if (hint) {
             opts.hint = hint;
         }
 
-        if(opts.maxTimeMS) {
+        if (opts.maxTimeMS) {
             cmd.maxTimeMS = opts.maxTimeMS;
         }
 
         // Run the command and return the result
-        return this.runReadCommand(cmd).n;
+        var response = this.runReadCommand(cmd).n;
+        if (response.ok == 0) {
+            throw new Error("count failed: " + tojson(response));
+        }
     }
 
     // Return the result of the find
@@ -2387,32 +2392,33 @@ DBCollection.prototype.count = function(query, options) {
 */
 DBCollection.prototype.distinct = function(keyString, query, options){
     options = options || {};
-    var opts = {};
-    Object.extend(opts, options);
+    var opts = Object.extend({}, options || {});
     var keyStringType = typeof keyString;
     var queryType = typeof query;
 
-    if(keyStringType != "string") {
+    if (keyStringType != "string") {
         throw new Error("The first argument to the distinct command must be a string but was a " + keyStringType);
     }
 
-    if(query != null && queryType != "object") {
+    if (query != null && queryType != "object") {
         throw new Error("The query argument to the distinct command must be a document but was a " + queryType);
     }
 
     // Distinct command
-    var cmd = { distinct : this.getName(),
+    var cmd = {
+        distinct : this.getName(),
         key : keyString,
-        query : query || {} }
+        query : query || {}
+    };
 
     // Set maxTimeMS if provided
-    if(opts.maxTimeMS) {
+    if (opts.maxTimeMS) {
         cmd.maxTimeMS = opts.maxTimeMS;
     }
 
     // Execute distinct command
-    var res = this._dbReadCommand(cmd);
-    if(!res.ok) {
+    var res = this.runReadCommand(cmd);
+    if (!res.ok) {
         throw new Error("distinct failed: " + tojson(res));
     }
 
