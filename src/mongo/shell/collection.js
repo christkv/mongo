@@ -1259,7 +1259,11 @@ DBCollection.prototype.aggregate = function(pipeline, aggregateOptions) {
     var copy = Object.extend({}, aggregateOptions);
 
     // Ensure handle crud API aggregateOptions
-    for (var name in copy) {
+    var keys = Object.keys(copy);
+
+    for (var i = 0; i < keys.length; i++) {
+        var name = keys[i];
+
         if (name == 'batchSize') {
             if (copy.cursor == null) {
                 copy.cursor = {};
@@ -1671,11 +1675,11 @@ DBCollection.prototype.unsetWriteConcern = function() {
 
 DBCollection.prototype._createWriteConcern = function(options) {
     // If writeConcern set, use it, else get from collection (which will inherit from db/mongo)
-    var writeConcern = options.writeConcern || this.getWriteConcern();
+    var writeConcernOptions = options.writeConcern || this.getWriteConcern();
     var writeConcerns = ['w', 'wtimeout', 'j', 'fsync'];
 
-    if (writeConcern instanceof WriteConcern) {
-        writeConcern = writeConcern.toJSON();
+    if (writeConcernOptions instanceof WriteConcern) {
+        writeConcernOptions = writeConcernOptions.toJSON();
     }
 
     // Only merge in write concern options if at least one is specified in options
@@ -1683,16 +1687,16 @@ DBCollection.prototype._createWriteConcern = function(options) {
         || options.wtimeout != null
         || options.j != null
         || options.fsync != null) {
-        writeConcern = {};
+        writeConcernOptions = {};
 
         writeConcerns.forEach(function(wc) {
             if (options[wc] != null) {
-                writeConcern[wc] = options[wc];
+                writeConcernOptions[wc] = options[wc];
             }
         });
     }
 
-    return writeConcern;
+    return writeConcernOptions;
 }
 
 /**
@@ -1711,7 +1715,6 @@ DBCollection.prototype.addIdIfNeeded = function(obj) {
 
     return obj;
 }
-
 
 /**
 * Perform a bulkWrite operation without a fluent API
@@ -1767,7 +1770,7 @@ DBCollection.prototype.bulkWrite = function(operations, options) {
             }
 
             // Add _id ObjectId if needed
-            op.insertOne.document = addIdIfNeeded(op.insertOne.document);
+            op.insertOne.document = self.addIdIfNeeded(op.insertOne.document);
             // InsertedIds is a map of [originalInsertOrderIndex] = document._id
             insertedIds[index] = op.insertOne.document._id;
             // Translate operation to bulk operation
@@ -1835,8 +1838,6 @@ DBCollection.prototype.bulkWrite = function(operations, options) {
             // Translate operation to bulkOp operation
             bulkOp.find(op.deleteMany.filter).remove();
         }
-
-        index = index + 1;
     });
 
     // Execute bulkOp operation
@@ -1874,12 +1875,10 @@ DBCollection.prototype.bulkWrite = function(operations, options) {
 * @return {object}
 */
 DBCollection.prototype.insertOne = function(document, options) {
-    options = options || {};
-    var opts = {};
-    Object.extend(opts, options);
+    var opts = Object.extend({}, options || {});
 
     // Add _id ObjectId if needed
-    document = addIdIfNeeded(document);
+    document = this.addIdIfNeeded(document);
 
     // Get the write concern
     var writeConcern = this._createWriteConcern(opts);
@@ -1892,7 +1891,7 @@ DBCollection.prototype.insertOne = function(document, options) {
     bulk.insert(document);
 
     // Execute insert
-    var r = bulk.execute(writeConcern);
+    bulk.execute(writeConcern);
     if (!result.acknowledged) {
         return result;
     }
@@ -1917,13 +1916,13 @@ DBCollection.prototype.insertOne = function(document, options) {
 * @return {object}
 */
 DBCollection.prototype.insertMany = function(documents, options) {
-    options = options || {};
+    var self = this;
     var opts = Object.extend({}, options || {});
     opts.ordered = (typeof opts.ordered == 'boolean') ? opts.ordered : true;
 
     // Ensure all documents have an _id
     documents = documents.map(function(x) {
-        return addIdIfNeeded(x);
+        return self.addIdIfNeeded(x);
     });
 
     // Get the write concern
@@ -1943,7 +1942,7 @@ DBCollection.prototype.insertMany = function(documents, options) {
     });
 
     // Execute bulk operation
-    var r = bulk.execute(writeConcern);
+    bulk.execute(writeConcern);
     if (!result.acknowledged) {
         return result;
     }
@@ -1969,7 +1968,6 @@ DBCollection.prototype.insertMany = function(documents, options) {
 * @return {object}
 */
 DBCollection.prototype.deleteOne = function(filter, options) {
-    options = options || {};
     var opts = Object.extend({}, options || {});
 
     // Get the write concern
@@ -2006,7 +2004,6 @@ DBCollection.prototype.deleteOne = function(filter, options) {
 * @return {object}
 */
 DBCollection.prototype.deleteMany = function(filter, options) {
-    options = options || {};
     var opts = Object.extend({}, options || {});
 
     // Get the write concern
@@ -2045,14 +2042,13 @@ DBCollection.prototype.deleteMany = function(filter, options) {
 * @return {object}
 */
 DBCollection.prototype.replaceOne = function(filter, replacement, options) {
-    options = options || {};
     var opts = Object.extend({}, options || {});
 
     // Get the write concern
     var writeConcern = this._createWriteConcern(opts);
 
     // Result
-    var result = {acknowledged: (writeConcern && writeConcern.w == 0) ? false: true};
+    var result = {acknowledged: (writeConcern && writeConcern.w == 0) ? false: true };
 
     // Use bulk operation API already in the shell
     var bulk = this.initializeOrderedBulkOp();
@@ -2074,8 +2070,8 @@ DBCollection.prototype.replaceOne = function(filter, replacement, options) {
     result.matchedCount = r.nMatched;
     result.modifiedCount = (r.nModified != null) ? r.nModified : r.n;
 
-    if (r.upserted.length > 0)
-        result.upsertedId = r.getUpsertedId()._id;
+    if (r.getUpsertedIds().length > 0) {
+        result.upsertedId = r.getUpsertedIds()[0]._id;
     }
 
     return result;
@@ -2095,7 +2091,6 @@ DBCollection.prototype.replaceOne = function(filter, replacement, options) {
 * @return {object}
 */
 DBCollection.prototype.updateOne = function(filter, update, options) {
-    options = options || {};
     var opts = Object.extend({}, options || {});
 
     // Get the write concern
@@ -2124,8 +2119,8 @@ DBCollection.prototype.updateOne = function(filter, update, options) {
     result.matchedCount = r.nMatched;
     result.modifiedCount = (r.nModified != null) ? r.nModified : r.n;
 
-    if (r.upserted.length > 0)
-        result.upsertedId = r.getUpsertedId()._id;
+    if (r.getUpsertedIds().length > 0) {
+        result.upsertedId = r.getUpsertedIds()[0]._id;
     }
 
     return result;
@@ -2145,7 +2140,6 @@ DBCollection.prototype.updateOne = function(filter, update, options) {
 * @return {object}
 */
 DBCollection.prototype.updateMany = function(filter, update, options) {
-    options = options || {};
     var opts = Object.extend({}, options || {});
 
     // Get the write concern
@@ -2157,7 +2151,7 @@ DBCollection.prototype.updateMany = function(filter, update, options) {
     // Use bulk operation API already in the shell
     var bulk = this.initializeOrderedBulkOp();
 
-    // Add the updateOne operation
+    // Add the updateMany operation
     var op = bulk.find(filter);
     if (opts.upsert) {
         op = op.upsert();
@@ -2174,8 +2168,8 @@ DBCollection.prototype.updateMany = function(filter, update, options) {
     result.matchedCount = r.nMatched;
     result.modifiedCount = (r.nModified != null) ? r.nModified : r.n;
 
-    if (r.upserted.length > 0)
-        result.upsertedId = r.getUpsertedId()._id;
+    if (r.getUpsertedIds().length > 0) {
+        result.upsertedId = r.getUpsertedIds()[0]._id;
     }
 
     return result;
@@ -2194,7 +2188,6 @@ DBCollection.prototype.updateMany = function(filter, update, options) {
 * @return {object}
 */
 DBCollection.prototype.findOneAndDelete = function(filter, options) {
-    options = options || {};
     var opts = Object.extend({}, options || {});
     // Set up the command
     var cmd = {query: filter, remove: true};
@@ -2238,7 +2231,6 @@ DBCollection.prototype.findOneAndDelete = function(filter, options) {
 * @return {object}
 */
 DBCollection.prototype.findOneAndReplace = function(filter, replacement, options) {
-    options = options || {};
     var opts = Object.extend({}, options || {});
     // Set up the command
     var cmd = {query: filter, update: replacement};
@@ -2285,7 +2277,6 @@ DBCollection.prototype.findOneAndReplace = function(filter, replacement, options
 * @return {object}
 */
 DBCollection.prototype.findOneAndUpdate = function(filter, update, options) {
-    options = options || {};
     var opts = Object.extend({}, options || {});
 
     // Set up the command
@@ -2328,14 +2319,13 @@ DBCollection.prototype.findOneAndUpdate = function(filter, update, options) {
 * @method
 * @param {object} query The query for the count.
 * @param {object} [options=null] Optional settings.
-* @param {boolean} [options.limit=null] The limit of documents to count.
-* @param {boolean} [options.skip=null] The number of documents to skip for the count.
-* @param {string} [options.hint=null] An index name hint for the query.
+* @param {number} [options.limit=null] The limit of documents to count.
+* @param {number} [options.skip=null] The number of documents to skip for the count.
+* @param {string|object} [options.hint=null] An index name hint or specification for the query.
 * @param {number} [options.maxTimeMS=null] The maximum amount of time to allow the query to run.
 * @return {number}
 */
 DBCollection.prototype.count = function(query, options) {
-    options = options || {};
     var opts = Object.extend({}, options || {});
 
     // Set parameters
@@ -2347,17 +2337,16 @@ DBCollection.prototype.count = function(query, options) {
     if (skip != null || limit != null || hint != null) {
         // Final query
         var cmd = {
-            'count': this.getName(), 'query': query
+            'count': this.getName(),
+            'query': query
         };
 
         // Add limit and skip if defined
-        if (typeof skip == 'number') {
-            throw new Error('skip option must be a number');
+        if (skip && typeof skip == 'number') {
             cmd.skip = skip;
         }
 
-        if (typeof limit == 'number') {
-            throw new Error('limit option must be a number');
+        if (limit && typeof limit == 'number') {
             cmd.limit = limit;
         }
 
@@ -2370,10 +2359,12 @@ DBCollection.prototype.count = function(query, options) {
         }
 
         // Run the command and return the result
-        var response = this.runReadCommand(cmd).n;
+        var response = this.runReadCommand(cmd);
         if (response.ok == 0) {
             throw new Error("count failed: " + tojson(response));
         }
+
+        return response.n;
     }
 
     // Return the result of the find
@@ -2391,7 +2382,6 @@ DBCollection.prototype.count = function(query, options) {
 * @return {object}
 */
 DBCollection.prototype.distinct = function(keyString, query, options){
-    options = options || {};
     var opts = Object.extend({}, options || {});
     var keyStringType = typeof keyString;
     var queryType = typeof query;
@@ -2423,6 +2413,10 @@ DBCollection.prototype.distinct = function(keyString, query, options){
     }
 
     return res.values;
+}
+
+DBCollection.prototype._distinct = function( keyString , query ){
+    return this._dbReadCommand( { distinct : this._shortName , key : keyString , query : query || {} } );
 }
 
 /**

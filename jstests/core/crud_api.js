@@ -14,6 +14,7 @@
                 coll.drop();
                 // Insert test data
                 var r = coll.insertMany(args.insert);
+                // print(r)
                 assert.eq(args.insert.length, r.insertedIds.length);
 
                 // Execute the method with arguments
@@ -21,7 +22,7 @@
                 assert.docEq(args.result, r);
 
                 // Get all the results
-                var results = coll.find({}).toArray();
+                var results = coll.find({}).sort({_id: 1}).toArray();
                 assert.docEq(args.expected, results);
             }
         }
@@ -29,8 +30,7 @@
         // Setup executors
         var deleteManyExecutor = createTestExecutor(coll, 'deleteMany');
         var deleteOneExecutor = createTestExecutor(coll, 'deleteOne');
-        var bulkOrderedWriteExecutor = createTestExecutor(coll, 'bulkWrite');
-        var bulkUnOrderedWriteExecutor = createTestExecutor(coll, 'bulkWrite');
+        var bulkWriteExecutor = createTestExecutor(coll, 'bulkWrite');
         var findOneAndDeleteExecutor = createTestExecutor(coll, 'findOneAndDelete');
         var findOneAndReplaceExecutor = createTestExecutor(coll, 'findOneAndReplace');
         var findOneAndUpdateExecutor = createTestExecutor(coll, 'findOneAndUpdate');
@@ -46,22 +46,25 @@
         // BulkWrite
         //
 
-        bulkOrderedWriteExecutor({
+        bulkWriteExecutor({
           insert: [{ _id: 1, c: 1 }, { _id: 2, c: 2 }, { _id: 3, c: 3 }],
           params: [[
               { insertOne: { document: {_id: 4, a: 1 } } }
             , { updateOne: { filter: {_id: 5, a:2}, update: {$set: {a:2}}, upsert:true } }
             , { updateMany: { filter: {_id: 6,a:3}, update: {$set: {a:3}}, upsert:true } }
             , { deleteOne: { filter: {c:1} } }
+            , { insertOne: { document: {_id: 7, c: 2 } } }
             , { deleteMany: { filter: {c:2} } }
             , { replaceOne: { filter: {c:3}, replacement: {c:4}, upsert:true } }]],
           result: {
-            acknowledged: true, insertedCount:1, matchedCount:1, deletedCount:2, upsertedCount:2, insertedIds : {'0' : 4 }, upsertedIds : { '1' : 5, '2' : 6 }
+            acknowledged: true, insertedCount:2,
+            matchedCount:1, deletedCount: 3,
+            upsertedCount:2, insertedIds : {'0' : 4, '4' : 7 }, upsertedIds : { '1' : 5, '2' : 6 }
           },
           expected: [{ "_id" : 3, "c" : 4 }, { "_id" : 4, "a" : 1 }, { "_id" : 5, "a" : 2 }, { "_id" : 6, "a" : 3 }]
         });
 
-        bulkUnOrderedWriteExecutor({
+        bulkWriteExecutor({
           insert: [{ _id: 1, c: 1 }, { _id: 2, c: 2 }, { _id: 3, c: 3 }],
           params: [[
               { insertOne: { document: { _id: 4, a: 1 } } }
@@ -156,11 +159,11 @@
         findOneAndDeleteExecutor({
           insert: [{ _id: 1, x:11 }, { _id: 2, x:22 }, { _id: 3, x:33 }],
           params: [
-                { _id: { $eq: 2 } }
+                { _id: { $gt: 2 } }
               , { projection: { x: 1, _id: 0 }, sort: { x: 1 } }
             ],
-          result: {x:22},
-          expected: [{_id:1, x: 11}, {_id:3, x: 33}]
+          result: {x:33},
+          expected: [{_id:1, x: 11}, {_id:2, x: 22}]
         });
         // FindOneAndDelete when one document matches
         findOneAndDeleteExecutor({
@@ -626,7 +629,7 @@
         // Simple distinct of field x filtered with maxTimeMS
         distinctExecutor({
           insert: [{ _id: 1, x:11 }, { _id: 2, x:22 }, { _id: 3, x:33 }],
-          params: ['x', {x: { $gt: 11 }}, {maxTimeMS:100}],
+          params: ['x', {x: { $gt: 11 }}, {maxTimeMS:100000}],
           result: [22, 33],
           expected: [{ _id: 1, x:11 }, { _id: 2, x:22 }, { _id: 3, x:33 }]
         });
@@ -684,6 +687,50 @@
         // Set the maxTimeMS and allowDiskUse on aggregation query
         var result = coll.aggregate([{$match: {}}], {batchSize:2, maxTimeMS:100, allowDiskUse:true}).toArray();
         assert.eq(2, result.length);
+
+        var threwError = function(op) {
+          try {
+            op();
+            return false;
+          } catch(err) {
+            return true;
+          }
+        }
+
+        // Drop collection
+        coll.drop();
+        coll.ensureIndex({a:1}, {unique:true})
+
+        // Should throw duplicate key error
+        assert.eq(true, threwError(function() {
+          coll.insertMany([{a:0, b:0}, {a:0, b:1}]);
+        }));
+
+        assert.eq(true, threwError(function() {
+          coll.insertOne({a:0, b:0});
+        }));
+
+        assert.eq(true, threwError(function() {
+          coll.updateOne({b:2}, {$set: {a:0}}, {upsert:true});
+        }));
+
+        assert.eq(true, threwError(function() {
+          coll.updateMany({b:2}, {$set: {a:0}}, {upsert:true});
+        }));
+
+        assert.eq(true, threwError(function() {
+          coll.deleteOne({$set:{a:1}});
+        }));
+
+        assert.eq(true, threwError(function() {
+          coll.deleteMany({$set:{a:1}});
+        }));
+
+        assert.eq(true, threwError(function() {
+          coll.bulkWrite([
+            { insertOne: { document: { _id: 4, a: 0 } } }
+          ]);
+        }));
     }
 
     crudAPISpecTests();
