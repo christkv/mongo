@@ -1675,11 +1675,11 @@ DBCollection.prototype.unsetWriteConcern = function() {
 
 DBCollection.prototype._createWriteConcern = function(options) {
     // If writeConcern set, use it, else get from collection (which will inherit from db/mongo)
-    var writeConcernOptions = options.writeConcern || this.getWriteConcern();
-    var writeConcerns = ['w', 'wtimeout', 'j', 'fsync'];
+    var writeConcerns = options.writeConcern || this.getWriteConcern();
+    var writeConcernOptions = ['w', 'wtimeout', 'j', 'fsync'];
 
-    if (writeConcernOptions instanceof WriteConcern) {
-        writeConcernOptions = writeConcernOptions.toJSON();
+    if (writeConcerns instanceof WriteConcern) {
+        writeConcerns = writeConcerns.toJSON();
     }
 
     // Only merge in write concern options if at least one is specified in options
@@ -1687,16 +1687,16 @@ DBCollection.prototype._createWriteConcern = function(options) {
         || options.wtimeout != null
         || options.j != null
         || options.fsync != null) {
-        writeConcernOptions = {};
+        writeConcerns = {};
 
-        writeConcerns.forEach(function(wc) {
+        writeConcernOptions.forEach(function(wc) {
             if (options[wc] != null) {
-                writeConcernOptions[wc] = options[wc];
+                writeConcerns[wc] = options[wc];
             }
         });
     }
 
-    return writeConcernOptions;
+    return writeConcerns;
 }
 
 /**
@@ -1742,7 +1742,6 @@ DBCollection.prototype.addIdIfNeeded = function(obj) {
 * @return {object}
 */
 DBCollection.prototype.bulkWrite = function(operations, options) {
-    var self = this;
     options = options || {};
     var opts = {};
     Object.extend(opts, options);
@@ -1770,7 +1769,7 @@ DBCollection.prototype.bulkWrite = function(operations, options) {
             }
 
             // Add _id ObjectId if needed
-            op.insertOne.document = self.addIdIfNeeded(op.insertOne.document);
+            op.insertOne.document = this.addIdIfNeeded(op.insertOne.document);
             // InsertedIds is a map of [originalInsertOrderIndex] = document._id
             insertedIds[index] = op.insertOne.document._id;
             // Translate operation to bulk operation
@@ -1838,7 +1837,7 @@ DBCollection.prototype.bulkWrite = function(operations, options) {
             // Translate operation to bulkOp operation
             bulkOp.find(op.deleteMany.filter).remove();
         }
-    });
+    }, this);
 
     // Execute bulkOp operation
     var response = bulkOp.execute(writeConcern);
@@ -1922,8 +1921,8 @@ DBCollection.prototype.insertMany = function(documents, options) {
 
     // Ensure all documents have an _id
     documents = documents.map(function(x) {
-        return self.addIdIfNeeded(x);
-    });
+        return this.addIdIfNeeded(x);
+    }, this);
 
     // Get the write concern
     var writeConcern = this._createWriteConcern(opts);
@@ -1982,8 +1981,15 @@ DBCollection.prototype.deleteOne = function(filter, options) {
     // Add the deleteOne operation
     bulk.find(filter).removeOne();
 
-    // Remove the first document that matches the selector
-    var r = bulk.execute(writeConcern);
+    try {
+        // Remove the first document that matches the selector
+        var r = bulk.execute(writeConcern);
+    } catch (err) {
+        if(err.hasWriteErrors && err.hasWriteErrors()) {
+            throw err.getWriteErrorAt(0);
+        }
+    }
+
     if (!result.acknowledged) {
         return result;
     }
@@ -2018,8 +2024,15 @@ DBCollection.prototype.deleteMany = function(filter, options) {
     // Add the deleteOne operation
     bulk.find(filter).remove();
 
-    // Remove all documents that matche the selector
-    var r = bulk.execute(writeConcern);
+    try {
+        // Remove all documents that matche the selector
+        var r = bulk.execute(writeConcern);
+    } catch (err) {
+        if(err.hasWriteErrors && err.hasWriteErrors()) {
+            throw err.getWriteErrorAt(0);
+        }
+    }
+
     if (!result.acknowledged) {
         return result;
     }
@@ -2061,8 +2074,15 @@ DBCollection.prototype.replaceOne = function(filter, replacement, options) {
 
     op.replaceOne(replacement);
 
-    // Replace the document
-    var r = bulk.execute(writeConcern);
+    try {
+        // Replace the document
+        var r = bulk.execute(writeConcern);
+    } catch (err) {
+        if(err.hasWriteErrors && err.hasWriteErrors()) {
+            throw err.getWriteErrorAt(0);
+        }
+    }
+
     if (!result.acknowledged) {
         return result;
     }
@@ -2071,7 +2091,7 @@ DBCollection.prototype.replaceOne = function(filter, replacement, options) {
     result.modifiedCount = (r.nModified != null) ? r.nModified : r.n;
 
     if (r.getUpsertedIds().length > 0) {
-        result.upsertedId = r.getUpsertedIds()[0]._id;
+        result.upsertedId = r.getUpsertedIdAt(0)._id;
     }
 
     return result;
@@ -2110,8 +2130,15 @@ DBCollection.prototype.updateOne = function(filter, update, options) {
 
     op.updateOne(update);
 
-    // Update the first document that matches the selector
-    var r = bulk.execute(writeConcern);
+    try {
+        // Update the first document that matches the selector
+        var r = bulk.execute(writeConcern);
+    } catch (err) {
+        if(err.hasWriteErrors && err.hasWriteErrors()) {
+            throw err.getWriteErrorAt(0);
+        }
+    }
+
     if (!result.acknowledged) {
         return result;
     }
@@ -2120,7 +2147,7 @@ DBCollection.prototype.updateOne = function(filter, update, options) {
     result.modifiedCount = (r.nModified != null) ? r.nModified : r.n;
 
     if (r.getUpsertedIds().length > 0) {
-        result.upsertedId = r.getUpsertedIds()[0]._id;
+        result.upsertedId = r.getUpsertedIdAt(0)._id
     }
 
     return result;
@@ -2159,8 +2186,15 @@ DBCollection.prototype.updateMany = function(filter, update, options) {
 
     op.update(update);
 
-    // Update all documents that match the selector
-    var r = bulk.execute(writeConcern);
+    try {
+        // Update all documents that match the selector
+        var r = bulk.execute(writeConcern);
+    } catch (err) {
+        if(err.hasWriteErrors && err.hasWriteErrors()) {
+            throw err.getWriteErrorAt(0);
+        }
+    }
+
     if (!result.acknowledged) {
         return result;
     }
@@ -2169,7 +2203,7 @@ DBCollection.prototype.updateMany = function(filter, update, options) {
     result.modifiedCount = (r.nModified != null) ? r.nModified : r.n;
 
     if (r.getUpsertedIds().length > 0) {
-        result.upsertedId = r.getUpsertedIds()[0]._id;
+        result.upsertedId = r.getUpsertedIdAt(0)._id
     }
 
     return result;
@@ -2342,11 +2376,11 @@ DBCollection.prototype.count = function(query, options) {
         };
 
         // Add limit and skip if defined
-        if (skip && typeof skip == 'number') {
+        if (typeof skip == 'number' && skip >= 0) {
             cmd.skip = skip;
         }
 
-        if (limit && typeof limit == 'number') {
+        if (typeof limit == 'number' && limit >= 0) {
             cmd.limit = limit;
         }
 

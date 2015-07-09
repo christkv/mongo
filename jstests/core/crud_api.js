@@ -14,7 +14,6 @@
                 coll.drop();
                 // Insert test data
                 var r = coll.insertMany(args.insert);
-                // print(r)
                 assert.eq(args.insert.length, r.insertedIds.length);
 
                 // Execute the method with arguments
@@ -688,49 +687,41 @@
         var result = coll.aggregate([{$match: {}}], {batchSize:2, maxTimeMS:100, allowDiskUse:true}).toArray();
         assert.eq(2, result.length);
 
-        var threwError = function(op) {
-          try {
-            op();
-            return false;
-          } catch(err) {
-            return true;
-          }
-        }
-
         // Drop collection
         coll.drop();
         coll.ensureIndex({a:1}, {unique:true})
 
         // Should throw duplicate key error
-        assert.eq(true, threwError(function() {
-          coll.insertMany([{a:0, b:0}, {a:0, b:1}]);
-        }));
+        assert.throws(function() {
+          coll.insertMany([{a:0, b:0}, {a:0, b:1}])
+        });
 
-        assert.eq(true, threwError(function() {
-          coll.insertOne({a:0, b:0});
-        }));
+        assert(coll.findOne({a:0, b:0}) != null);
+        assert.throws(function() {
+          coll.insertOne({a:0, b:0})
+        });
 
-        assert.eq(true, threwError(function() {
+        assert.throws(function() {
           coll.updateOne({b:2}, {$set: {a:0}}, {upsert:true});
-        }));
+        });
 
-        assert.eq(true, threwError(function() {
+        assert.throws(function() {
           coll.updateMany({b:2}, {$set: {a:0}}, {upsert:true});
-        }));
+        });
 
-        assert.eq(true, threwError(function() {
-          coll.deleteOne({$set:{a:1}});
-        }));
+        assert.throws(function() {
+          coll.deleteOne({$invalidFieldName:{a:1}});
+        });
 
-        assert.eq(true, threwError(function() {
+        assert.throws(function() {
           coll.deleteMany({$set:{a:1}});
-        }));
+        });
 
-        assert.eq(true, threwError(function() {
+        assert.throws(function() {
           coll.bulkWrite([
             { insertOne: { document: { _id: 4, a: 0 } } }
           ]);
-        }));
+        });
     }
 
     crudAPISpecTests();
