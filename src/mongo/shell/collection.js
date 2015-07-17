@@ -1675,11 +1675,11 @@ DBCollection.prototype.unsetWriteConcern = function() {
 
 DBCollection.prototype._createWriteConcern = function(options) {
     // If writeConcern set, use it, else get from collection (which will inherit from db/mongo)
-    var writeConcerns = options.writeConcern || this.getWriteConcern();
+    var writeConcern = options.writeConcern || this.getWriteConcern();
     var writeConcernOptions = ['w', 'wtimeout', 'j', 'fsync'];
 
-    if (writeConcerns instanceof WriteConcern) {
-        writeConcerns = writeConcerns.toJSON();
+    if (writeConcern instanceof WriteConcern) {
+        writeConcern = writeConcern.toJSON();
     }
 
     // Only merge in write concern options if at least one is specified in options
@@ -1687,16 +1687,16 @@ DBCollection.prototype._createWriteConcern = function(options) {
         || options.wtimeout != null
         || options.j != null
         || options.fsync != null) {
-        writeConcerns = {};
+        writeConcern = {};
 
         writeConcernOptions.forEach(function(wc) {
             if (options[wc] != null) {
-                writeConcerns[wc] = options[wc];
+                writeConcern[wc] = options[wc];
             }
         });
     }
 
-    return writeConcerns;
+    return writeConcern;
 }
 
 /**
@@ -1889,8 +1889,21 @@ DBCollection.prototype.insertOne = function(document, options) {
     var bulk = this.initializeOrderedBulkOp();
     bulk.insert(document);
 
-    // Execute insert
-    bulk.execute(writeConcern);
+    try {
+        // Execute insert
+        bulk.execute(writeConcern);
+    } catch (err) {
+        if(err.hasWriteErrors()) {
+            throw err.getWriteErrorAt(0);
+        }
+
+        if(err.hasWriteConcernError()) {
+            throw err.getWriteConcernError();
+        }
+
+        throw err;
+    }
+
     if (!result.acknowledged) {
         return result;
     }
@@ -1940,8 +1953,21 @@ DBCollection.prototype.insertMany = function(documents, options) {
         bulk.insert(doc);
     });
 
-    // Execute bulk operation
-    bulk.execute(writeConcern);
+    try {
+        // Execute insert
+        bulk.execute(writeConcern);
+    } catch (err) {
+        if(err.hasWriteErrors()) {
+            throw err.getWriteErrorAt(0);
+        }
+
+        if(err.hasWriteConcernError()) {
+            throw err.getWriteConcernError();
+        }
+
+        throw err;
+    }
+
     if (!result.acknowledged) {
         return result;
     }
@@ -1985,9 +2011,15 @@ DBCollection.prototype.deleteOne = function(filter, options) {
         // Remove the first document that matches the selector
         var r = bulk.execute(writeConcern);
     } catch (err) {
-        if(err.hasWriteErrors && err.hasWriteErrors()) {
+        if(err.hasWriteErrors()) {
             throw err.getWriteErrorAt(0);
         }
+
+        if(err.hasWriteConcernError()) {
+            throw err.getWriteConcernError();
+        }
+
+        throw err;
     }
 
     if (!result.acknowledged) {
@@ -2028,9 +2060,15 @@ DBCollection.prototype.deleteMany = function(filter, options) {
         // Remove all documents that matche the selector
         var r = bulk.execute(writeConcern);
     } catch (err) {
-        if(err.hasWriteErrors && err.hasWriteErrors()) {
+        if(err.hasWriteErrors()) {
             throw err.getWriteErrorAt(0);
         }
+
+        if(err.hasWriteConcernError()) {
+            throw err.getWriteConcernError();
+        }
+
+        throw err;
     }
 
     if (!result.acknowledged) {
@@ -2078,9 +2116,15 @@ DBCollection.prototype.replaceOne = function(filter, replacement, options) {
         // Replace the document
         var r = bulk.execute(writeConcern);
     } catch (err) {
-        if(err.hasWriteErrors && err.hasWriteErrors()) {
+        if(err.hasWriteErrors()) {
             throw err.getWriteErrorAt(0);
         }
+
+        if(err.hasWriteConcernError()) {
+            throw err.getWriteConcernError();
+        }
+
+        throw err;
     }
 
     if (!result.acknowledged) {
@@ -2134,9 +2178,15 @@ DBCollection.prototype.updateOne = function(filter, update, options) {
         // Update the first document that matches the selector
         var r = bulk.execute(writeConcern);
     } catch (err) {
-        if(err.hasWriteErrors && err.hasWriteErrors()) {
+        if(err.hasWriteErrors()) {
             throw err.getWriteErrorAt(0);
         }
+
+        if(err.hasWriteConcernError()) {
+            throw err.getWriteConcernError();
+        }
+
+        throw err;
     }
 
     if (!result.acknowledged) {
@@ -2190,9 +2240,15 @@ DBCollection.prototype.updateMany = function(filter, update, options) {
         // Update all documents that match the selector
         var r = bulk.execute(writeConcern);
     } catch (err) {
-        if(err.hasWriteErrors && err.hasWriteErrors()) {
+        if(err.hasWriteErrors()) {
             throw err.getWriteErrorAt(0);
         }
+
+        if(err.hasWriteConcernError()) {
+            throw err.getWriteConcernError();
+        }
+
+        throw err;
     }
 
     if (!result.acknowledged) {
@@ -2376,11 +2432,11 @@ DBCollection.prototype.count = function(query, options) {
         };
 
         // Add limit and skip if defined
-        if (typeof skip == 'number' && skip >= 0) {
+        if (typeof skip == 'number') {
             cmd.skip = skip;
         }
 
-        if (typeof limit == 'number' && limit >= 0) {
+        if (typeof limit == 'number') {
             cmd.limit = limit;
         }
 
