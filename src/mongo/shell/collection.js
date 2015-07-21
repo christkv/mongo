@@ -1742,9 +1742,7 @@ DBCollection.prototype.addIdIfNeeded = function(obj) {
 * @return {object}
 */
 DBCollection.prototype.bulkWrite = function(operations, options) {
-    options = options || {};
-    var opts = {};
-    Object.extend(opts, options);
+    var opts = Object.extend({}, options || {});
     opts.ordered = (typeof opts.ordered == 'boolean') ? opts.ordered : true;
 
     // Get the write concern
@@ -1928,7 +1926,6 @@ DBCollection.prototype.insertOne = function(document, options) {
 * @return {object}
 */
 DBCollection.prototype.insertMany = function(documents, options) {
-    var self = this;
     var opts = Object.extend({}, options || {});
     opts.ordered = (typeof opts.ordered == 'boolean') ? opts.ordered : true;
 
@@ -1953,20 +1950,8 @@ DBCollection.prototype.insertMany = function(documents, options) {
         bulk.insert(doc);
     });
 
-    try {
-        // Execute insert
-        bulk.execute(writeConcern);
-    } catch (err) {
-        if(err.hasWriteErrors()) {
-            throw err.getWriteErrorAt(0);
-        }
-
-        if(err.hasWriteConcernError()) {
-            throw err.getWriteConcernError();
-        }
-
-        throw err;
-    }
+    // Execute bulk write operation
+    bulk.execute(writeConcern);
 
     if (!result.acknowledged) {
         return result;
@@ -2095,6 +2080,13 @@ DBCollection.prototype.deleteMany = function(filter, options) {
 DBCollection.prototype.replaceOne = function(filter, replacement, options) {
     var opts = Object.extend({}, options || {});
 
+    // Check if first key in update statement contains a $
+    var keys = Object.keys(replacement);
+    // Check if first key does not have the $
+    if(keys.length > 0 && keys[0][0] == "$") {
+      throw new Error('the replace operation document must not contain atomic operators');
+    }
+
     // Get the write concern
     var writeConcern = this._createWriteConcern(opts);
 
@@ -2157,6 +2149,17 @@ DBCollection.prototype.replaceOne = function(filter, replacement, options) {
 DBCollection.prototype.updateOne = function(filter, update, options) {
     var opts = Object.extend({}, options || {});
 
+    // Check if first key in update statement contains a $
+    var keys = Object.keys(update);
+    if(keys.length == 0) {
+      throw new Error("the update operation document must contain at least one atomic operator");
+    }
+
+    // Check if first key does not have the $
+    if(keys[0][0] != "$") {
+      throw new Error('the update operation document must contain atomic operators');
+    }
+
     // Get the write concern
     var writeConcern = this._createWriteConcern(opts);
 
@@ -2218,6 +2221,17 @@ DBCollection.prototype.updateOne = function(filter, update, options) {
 */
 DBCollection.prototype.updateMany = function(filter, update, options) {
     var opts = Object.extend({}, options || {});
+
+    // Check if first key in update statement contains a $
+    var keys = Object.keys(update);
+    if(keys.length == 0) {
+      throw new Error("the update operation document must contain at least one atomic operator");
+    }
+
+    // Check if first key does not have the $
+    if(keys[0][0] != "$") {
+      throw new Error('the update operation document must contain atomic operators');
+    }
 
     // Get the write concern
     var writeConcern = this._createWriteConcern(opts);
@@ -2317,11 +2331,19 @@ DBCollection.prototype.findOneAndDelete = function(filter, options) {
 * @param {object} [options.sort=null] Determines which document the operation modifies if the query selects multiple documents.
 * @param {number} [options.maxTimeMS=null] The maximum amount of time to allow the query to run.
 * @param {boolean} [options.upsert=false] Upsert the document if it does not exist.
-* @param {boolean} [options.returnDocument=false] When true, returns the updated document rather than the original. The default is false.
+* @param {boolean} [options.returnNewDocument=false] When true, returns the updated document rather than the original. The default is false.
 * @return {object}
 */
 DBCollection.prototype.findOneAndReplace = function(filter, replacement, options) {
     var opts = Object.extend({}, options || {});
+
+    // Check if first key in update statement contains a $
+    var keys = Object.keys(replacement);
+    // Check if first key does not have the $
+    if(keys.length > 0 && keys[0][0] == "$") {
+      throw new Error("the replace operation document must not contain atomic operators");
+    }
+
     // Set up the command
     var cmd = {query: filter, update: replacement};
     if (opts.sort) {
@@ -2338,7 +2360,7 @@ DBCollection.prototype.findOneAndReplace = function(filter, replacement, options
 
     // Set flags
     cmd.upsert = (typeof opts.upsert == 'boolean') ? opts.upsert : false;
-    cmd.new = (typeof opts.returnDocument == 'boolean') ? opts.returnDocument : false;
+    cmd.new = (typeof opts.returnNewDocument == 'boolean') ? opts.returnNewDocument : false;
 
     // Get the write concern
     var writeConcern = this._createWriteConcern(opts);
@@ -2363,11 +2385,22 @@ DBCollection.prototype.findOneAndReplace = function(filter, replacement, options
 * @param {object} [options.sort=null] Determines which document the operation modifies if the query selects multiple documents.
 * @param {number} [options.maxTimeMS=null] The maximum amount of time to allow the query to run.
 * @param {boolean} [options.upsert=false] Upsert the document if it does not exist.
-* @param {boolean} [options.returnDocument=false] When true, returns the updated document rather than the original. The default is false.
+* @param {boolean} [options.returnNewDocument=false] When true, returns the updated document rather than the original. The default is false.
 * @return {object}
 */
 DBCollection.prototype.findOneAndUpdate = function(filter, update, options) {
     var opts = Object.extend({}, options || {});
+
+    // Check if first key in update statement contains a $
+    var keys = Object.keys(update);
+    if(keys.length == 0) {
+      throw new Error("the update operation document must contain at least one atomic operator");
+    }
+
+    // Check if first key does not have the $
+    if(keys[0][0] != "$") {
+      throw new Error("the update operation document must contain atomic operators");
+    }
 
     // Set up the command
     var cmd = {query: filter, update: update};
@@ -2385,7 +2418,7 @@ DBCollection.prototype.findOneAndUpdate = function(filter, update, options) {
 
     // Set flags
     cmd.upsert = (typeof opts.upsert == 'boolean') ? opts.upsert : false;
-    cmd.new = (typeof opts.returnDocument == 'boolean') ? opts.returnDocument : false;
+    cmd.new = (typeof opts.returnNewDocument == 'boolean') ? opts.returnNewDocument : false;
 
     // Get the write concern
     var writeConcern = this._createWriteConcern(opts);
@@ -2421,10 +2454,11 @@ DBCollection.prototype.count = function(query, options) {
     // Set parameters
     var skip = (typeof opts.skip == 'number') ? opts.skip : null;
     var limit = (typeof opts.limit == 'number') ? opts.limit : null;
+    var maxTimeMS = (typeof opts.maxTimeMS == 'number') ? opts.maxTimeMS : null;
     var hint = opts.hint;
 
     // Execute using command if we have passed in skip/limit or hint
-    if (skip != null || limit != null || hint != null) {
+    if (skip != null || limit != null || hint != null || maxTimeMS != null) {
         // Final query
         var cmd = {
             'count': this.getName(),

@@ -206,7 +206,7 @@
           params: [
                 { _id: { $gt: 1 } }
               , { x: 32 }
-              , { projection: { x: 1, _id: 0 }, sort: { x: 1 }, returnDocument:true }
+              , { projection: { x: 1, _id: 0 }, sort: { x: 1 }, returnNewDocument:true }
             ],
           result: {x:32},
           expected: [{_id:1, x: 11}, {_id:2, x: 32}, {_id:3, x: 33}]
@@ -228,7 +228,7 @@
           params: [
                 { _id: 2 }
               , { x: 32 }
-              , { projection: { x: 1, _id: 0 }, sort: { x: 1 }, returnDocument:true }
+              , { projection: { x: 1, _id: 0 }, sort: { x: 1 }, returnNewDocument:true }
             ],
           result: {x:32},
           expected: [{_id:1, x: 11}, {_id:2, x: 32}, {_id:3, x: 33}]
@@ -261,7 +261,7 @@
           params: [
                 { _id: 4 }
               , { x: 44 }
-              , { projection: { x: 1, _id: 0 }, sort: { x: 1 }, returnDocument:true }
+              , { projection: { x: 1, _id: 0 }, sort: { x: 1 }, returnNewDocument:true }
             ],
           result: null,
           expected: [{_id:1, x: 11}, {_id:2, x: 22}, {_id:3, x: 33}]
@@ -272,10 +272,14 @@
           params: [
                 { _id: 4 }
               , { x: 44 }
-              , { projection: { x: 1, _id: 0 }, sort: { x: 1 }, returnDocument:true, upsert:true }
+              , { projection: { x: 1, _id: 0 }, sort: { x: 1 }, returnNewDocument:true, upsert:true }
             ],
           result: {x:44},
           expected: [{_id:1, x: 11}, {_id:2, x: 22}, {_id:3, x: 33}, {_id:4, x: 44}]
+        });
+
+        assert.throws(function() {
+          coll.findOneAndReplace({a:1}, {$set:{b:1}});
         });
 
         //
@@ -299,7 +303,7 @@
           params: [
                 { _id: { $gt: 1 } }
               , { $inc: { x: 1 } }
-              , { projection: { x: 1, _id: 0 }, sort: { x: 1 }, returnDocument: true }
+              , { projection: { x: 1, _id: 0 }, sort: { x: 1 }, returnNewDocument: true }
             ],
           result: {x:23},
           expected: [{_id:1, x: 11}, {_id:2, x: 23}, {_id:3, x: 33}]
@@ -321,7 +325,7 @@
           params: [
                 { _id: 2 }
               , { $inc: { x: 1 } }
-              , { projection: { x: 1, _id: 0 }, sort: { x: 1 }, returnDocument: true }
+              , { projection: { x: 1, _id: 0 }, sort: { x: 1 }, returnNewDocument: true }
             ],
           result: {x:23},
           expected: [{_id:1, x: 11}, {_id:2, x: 23}, {_id:3, x: 33}]
@@ -354,7 +358,7 @@
           params: [
                 { _id: 4 }
               , { $inc: { x: 1 } }
-              , { projection: { x: 1, _id: 0 }, sort: { x: 1 }, returnDocument:true }
+              , { projection: { x: 1, _id: 0 }, sort: { x: 1 }, returnNewDocument:true }
             ],
           result: null,
           expected: [{_id:1, x: 11}, {_id:2, x: 22}, {_id:3, x: 33}]
@@ -365,10 +369,18 @@
           params: [
                 { _id: 4 }
               , { $inc: { x: 1 } }
-              , { projection: { x: 1, _id: 0 }, sort: { x: 1 }, returnDocument:true, upsert:true }
+              , { projection: { x: 1, _id: 0 }, sort: { x: 1 }, returnNewDocument:true, upsert:true }
             ],
           result: {x:1},
           expected: [{_id:1, x: 11}, {_id:2, x: 22}, {_id:3, x: 33}, {_id:4, x: 1}]
+        });
+
+        assert.throws(function() {
+          coll.findOneAndUpdate({a:1}, {});
+        });
+
+        assert.throws(function() {
+          coll.findOneAndUpdate({a:1}, {b:1});
         });
 
         //
@@ -472,6 +484,10 @@
           expected: [{_id:1, x: 11}, {_id:2, x: 22}, {_id:3, x: 33}, {_id:4, x: 1}]
         });
 
+        assert.throws(function() {
+          coll.replaceOne({a:1}, {$set:{b:1}});
+        });
+
         //
         // UpdateMany
         //
@@ -510,6 +526,14 @@
           params: [{ _id: 4 }, { $inc: { x: 1 } }, { upsert: true, w: 0 }],
           result: {acknowledged:false},
           expected: [{_id:1, x: 11}, {_id:2, x: 22}, {_id:3, x: 33}, {_id:4, x: 1}]
+        });
+
+        assert.throws(function() {
+          coll.updateMany({a:1}, {});
+        });
+
+        assert.throws(function() {
+          coll.updateMany({a:1}, {b:1});
         });
 
         //
@@ -551,6 +575,14 @@
           params: [{ _id: { $gt: 1 } }, { $inc: { x: 1 } }, {w:0}],
           result: {acknowledged:false},
           expected: [{_id:1, x: 11}, {_id:2, x: 23}, {_id:3, x: 33}]
+        });
+
+        assert.throws(function() {
+          coll.updateOne({a:1}, {});
+        });
+
+        assert.throws(function() {
+          coll.updateOne({a:1}, {b:1});
         });
 
         //
