@@ -10,7 +10,7 @@ env.Library(
         'get_status_from_command_result.cpp',
     ],
     LIBDEPS=[
-        '$BUILD_DIR/mongo/bson/bson',
+        '$BUILD_DIR/mongo/base',
         '$BUILD_DIR/mongo/util/foundation'
     ],
 )
@@ -22,6 +22,9 @@ env.Library(
     source=[
         'document_range.cpp'
     ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/base',
+    ],
 )
 
 env.Library(
@@ -31,6 +34,10 @@ env.Library(
     source=[
         'protocol.cpp',
     ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/base',
+        '$BUILD_DIR/mongo/bson/util/bson_extract',
+    ],
 )
 
 env.Library(
@@ -39,6 +46,7 @@ env.Library(
     ],
     source=[
         'factory.cpp',
+        'object_check.cpp',
     ],
     LIBDEPS=[
         'command_reply',
@@ -75,6 +83,7 @@ env.Library(
     ],
     LIBDEPS=[
         'document_range',
+        'metadata',
         '$BUILD_DIR/mongo/util/net/network',
     ],
 )
@@ -104,6 +113,7 @@ env.Library(
     ],
     LIBDEPS=[
         'document_range',
+        'metadata',
         '$BUILD_DIR/mongo/util/net/network',
     ],
 )
@@ -114,7 +124,9 @@ env.Library(
     ],
     source=[
         'metadata.cpp',
+        'metadata/audit_metadata.cpp',
         'metadata/server_selection_metadata.cpp',
+        'metadata/sharding_metadata.cpp',
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/client/read_preference',
@@ -128,6 +140,7 @@ env.CppUnitTest(
     ],
     source=[
         'metadata/server_selection_metadata_test.cpp',
+        'metadata/sharding_metadata_test.cpp',
     ],
     LIBDEPS=[
         'metadata',
@@ -139,15 +152,16 @@ env.CppUnitTest(
         'rpc_test',
     ],
     source=[
-        'command_reply_builder_test.cpp',
         'command_reply_test.cpp',
         'command_request_builder_test.cpp',
         'command_request_test.cpp',
+        'legacy_request_test.cpp',
+        'object_check_test.cpp',
         'protocol_test.cpp',
+        'reply_builder_test.cpp',
     ],
     LIBDEPS=[
-        'command_request',
-        'command_reply',
-        'protocol',
+        'rpc',
+        '$BUILD_DIR/mongo/client/clientdriver'
     ],
 )

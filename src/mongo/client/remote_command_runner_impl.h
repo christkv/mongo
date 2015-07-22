@@ -29,28 +29,33 @@
 #pragma once
 
 #include "mongo/client/connection_pool.h"
-#include "mongo/client/remote_command_runner.h"
+#include "mongo/executor/remote_command_request.h"
+#include "mongo/executor/remote_command_response.h"
 
 namespace mongo {
 
-    class RemoteCommandRunnerImpl : public RemoteCommandRunner {
-    public:
-        RemoteCommandRunnerImpl(int messagingPortTags);
-        virtual ~RemoteCommandRunnerImpl();
+template <typename T>
+class StatusWith;
 
-        /**
-         * Closes all underlying connections. Must be called before the destructor runs.
-         */
-        void shutdown();
+class RemoteCommandRunnerImpl {
+public:
+    RemoteCommandRunnerImpl(int messagingPortTags);
+    virtual ~RemoteCommandRunnerImpl();
 
-        virtual StatusWith<RemoteCommandResponse> runCommand(const RemoteCommandRequest& request);
+    /**
+     * Closes all underlying connections. Must be called before the destructor runs.
+     */
+    void shutdown();
 
-    private:
-        // The connection pool on which to send requests
-        ConnectionPool _connPool;
+    virtual StatusWith<executor::RemoteCommandResponse> runCommand(
+        const executor::RemoteCommandRequest& request);
 
-        // Whether shutdown has been called
-        bool _shutDown;
-    };
+private:
+    // The connection pool on which to send requests
+    ConnectionPool _connPool;
 
-} // namespace mongo
+    // Whether shutdown has been called
+    bool _shutDown;
+};
+
+}  // namespace mongo

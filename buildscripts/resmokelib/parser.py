@@ -25,7 +25,9 @@ DEST_TO_CONFIG = {
     "jobs": "jobs",
     "mongo_executable": "mongo",
     "mongod_executable": "mongod",
+    "mongod_parameters": "mongodSetParameters",
     "mongos_executable": "mongos",
+    "mongos_parameters": "mongosSetParameters",
     "no_journal": "nojournal",
     "no_prealloc_journal": "nopreallocj",
     "repeat": "repeat",
@@ -52,6 +54,13 @@ def parse_command_line():
                             " of a suite. If the file is located in the resmokeconfig/suites/"
                             " directory, then the basename without the .yml extension can be"
                             " specified, e.g. 'core'."))
+
+    parser.add_option("--executor", dest="executor_file", metavar="EXECUTOR",
+                      help=("A YAML file that specifies the executor configuration. If the file is"
+                            " located in the resmokeconfig/suites/ directory, then the basename"
+                            " without the .yml extension can be specified, e.g. 'core_small_oplog'."
+                            " If specified in combination with the --suites option, then the suite"
+                            " configuration takes precedence."))
 
     parser.add_option("--log", dest="logger_file", metavar="LOGGER",
                       help=("A YAML file that specifies the logging configuration. If the file is"
@@ -96,8 +105,20 @@ def parse_command_line():
     parser.add_option("--mongod", dest="mongod_executable", metavar="PATH",
                       help="The path to the mongod executable for resmoke.py to use.")
 
+    parser.add_option("--mongodSetParameters", dest="mongod_parameters",
+                      metavar="{key1: value1, key2: value2, ..., keyN: valueN}",
+                      help=("Pass one or more --setParameter options to all mongod processes"
+                            " started by resmoke.py. The argument is specified as bracketed YAML -"
+                            " i.e. JSON with support for single quoted and unquoted keys."))
+
     parser.add_option("--mongos", dest="mongos_executable", metavar="PATH",
                       help="The path to the mongos executable for resmoke.py to use.")
+
+    parser.add_option("--mongosSetParameters", dest="mongos_parameters",
+                      metavar="{key1: value1, key2: value2, ..., keyN: valueN}",
+                      help=("Pass one or more --setParameter options to all mongos processes"
+                            " started by resmoke.py. The argument is specified as bracketed YAML -"
+                            " i.e. JSON with support for single quoted and unquoted keys."))
 
     parser.add_option("--nojournal", action="store_true", dest="no_journal",
                       help="Disable journaling for all mongod's.")
@@ -134,7 +155,11 @@ def parse_command_line():
     parser.add_option("--wiredTigerIndexConfigString", dest="wt_index_config", metavar="CONFIG",
                       help="Set the WiredTiger index configuration setting for all mongod's.")
 
-    parser.set_defaults(logger_file="console", dry_run="off", list_suites=False)
+    parser.set_defaults(executor_file="with_server",
+                        logger_file="console",
+                        dry_run="off",
+                        list_suites=False)
+
     return parser.parse_args()
 
 
@@ -164,7 +189,9 @@ def update_config_vars(values):
     _config.JOBS = config.pop("jobs")
     _config.MONGO_EXECUTABLE = _expand_user(config.pop("mongo"))
     _config.MONGOD_EXECUTABLE = _expand_user(config.pop("mongod"))
+    _config.MONGOD_SET_PARAMETERS = config.pop("mongodSetParameters")
     _config.MONGOS_EXECUTABLE = _expand_user(config.pop("mongos"))
+    _config.MONGOS_SET_PARAMETERS = config.pop("mongosSetParameters")
     _config.NO_JOURNAL = config.pop("nojournal")
     _config.NO_PREALLOC_JOURNAL = config.pop("nopreallocj")
     _config.RANDOM_SEED = config.pop("seed")
@@ -189,7 +216,7 @@ def get_suites(values, args):
     if args:
         # No specified config, just use the following, and default the logging and executor.
         suite_config = _make_jstests_config(args)
-        _ensure_executor(suite_config)
+        _ensure_executor(suite_config, values.executor_file)
         suite = testing.suite.Suite("<jstests>", suite_config)
         return [suite]
 
@@ -198,7 +225,7 @@ def get_suites(values, args):
     suites = []
     for suite_filename in suite_files:
         suite_config = _get_suite_config(suite_filename)
-        _ensure_executor(suite_config)
+        _ensure_executor(suite_config, values.executor_file)
         suite = testing.suite.Suite(suite_filename, suite_config)
         suites.append(suite)
     return suites
@@ -209,8 +236,9 @@ def get_named_suites():
     Returns the list of suites available to execute.
     """
 
-    # Skip "with_server" because it does not define any test files to run.
-    suite_names = [suite for suite in resmokeconfig.NAMED_SUITES if suite != "with_server"]
+    # Skip "with_server" and "no_server" because they do not define any test files to run.
+    executor_only = set(["with_server", "no_server"])
+    suite_names = [suite for suite in resmokeconfig.NAMED_SUITES if suite not in executor_only]
     suite_names.sort()
     return suite_names
 
@@ -226,6 +254,9 @@ def _get_logging_config(pathname):
         if pathname not in resmokeconfig.NAMED_LOGGERS:
             raise optparse.OptionValueError("Unknown logger '%s'" % (pathname))
         pathname = resmokeconfig.NAMED_LOGGERS[pathname]  # Expand 'pathname' to full path.
+
+    if not utils.is_yaml_file(pathname) or not os.path.isfile(pathname):
+        raise optparse.OptionValueError("Expected a logger YAML config, but got '%s'" % (pathname))
 
     return utils.load_yaml_file(pathname).pop("logging")
 
@@ -254,6 +285,9 @@ def _get_suite_config(pathname):
             raise optparse.OptionValueError("Unknown suite '%s'" % (pathname))
         pathname = resmokeconfig.NAMED_SUITES[pathname]  # Expand 'pathname' to full path.
 
+    if not utils.is_yaml_file(pathname) or not os.path.isfile(pathname):
+        raise optparse.OptionValueError("Expected a suite YAML config, but got '%s'" % (pathname))
+
     return utils.load_yaml_file(pathname)
 
 
@@ -266,10 +300,19 @@ def _make_jstests_config(js_files):
     return {"selector": {"js_test": {"roots": js_files}}}
 
 
-def _ensure_executor(suite_config):
+def _ensure_executor(suite_config, executor_pathname):
     if "executor" not in suite_config:
-        pathname = resmokeconfig.NAMED_SUITES["with_server"]
-        suite_config["executor"] = utils.load_yaml_file(pathname).pop("executor")
+        # Named executors are specified as the basename of the file, without the .yml extension.
+        if not utils.is_yaml_file(executor_pathname) and not os.path.dirname(executor_pathname):
+            if executor_pathname not in resmokeconfig.NAMED_SUITES:
+                raise optparse.OptionValueError("Unknown executor '%s'" % (executor_pathname))
+            executor_pathname = resmokeconfig.NAMED_SUITES[executor_pathname]
+
+        if not utils.is_yaml_file(executor_pathname) or not os.path.isfile(executor_pathname):
+            raise optparse.OptionValueError("Expected an executor YAML config, but got '%s'"
+                                            % (executor_pathname))
+
+        suite_config["executor"] = utils.load_yaml_file(executor_pathname).pop("executor")
 
 
 def _expand_user(pathname):

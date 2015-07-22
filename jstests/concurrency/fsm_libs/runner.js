@@ -144,6 +144,12 @@ var runner = (function() {
         var firstWorkload = true;
 
         workloads.forEach(function(workload) {
+            // Workloads cannot have a shardKey if sameCollection is specified
+            if (clusterOptions.sameCollection &&
+                    cluster.isSharded() &&
+                    context[workload].config.data.shardKey) {
+                throw new Error('cannot specify a shardKey with sameCollection option');
+            }
             if (firstWorkload || !clusterOptions.sameCollection) {
                 if (firstWorkload || !clusterOptions.sameDB) {
                     dbName = uniqueDBName();
@@ -154,8 +160,9 @@ var runner = (function() {
                 myDB[collName].drop();
 
                 if (cluster.isSharded()) {
-                    // TODO: allow 'clusterOptions' to specify the shard key and split
-                    cluster.shardCollection(myDB[collName], { _id: 'hashed' }, false);
+                    var shardKey = context[workload].config.data.shardKey || { _id: 'hashed' };
+                    // TODO: allow workload config data to specify split
+                    cluster.shardCollection(myDB[collName], shardKey, false);
                 }
             }
 
@@ -341,6 +348,17 @@ var runner = (function() {
 
         try {
             var schedule = scheduleWorkloads(workloads, executionMode, executionOptions);
+
+            // Print out the entire schedule of workloads to make it easier to run the same
+            // schedule when debugging test failures.
+            jsTest.log('The entire schedule of FSM workloads:');
+
+            // Note: We use printjsononeline (instead of just plain printjson) to make it
+            // easier to reuse the output in variable assignments.
+            printjsononeline(schedule);
+
+            jsTest.log('End of schedule');
+
             schedule.forEach(function(workloads) {
                 var cleanup = [];
                 var errors = [];
@@ -360,7 +378,7 @@ var runner = (function() {
 
                     startTime = new Date();
                     threadMgr.init(workloads, context, maxAllowedConnections);
-                    threadMgr.spawnAll(cluster.getHost(), executionOptions);
+                    threadMgr.spawnAll(cluster, executionOptions);
                     threadMgr.checkFailed(0.2);
 
                     errors = threadMgr.joinAll();
@@ -391,6 +409,9 @@ var runner = (function() {
                 if (teardownFailed) {
                     throw new Error('workload teardown function(s) failed, see logs');
                 }
+
+                // Ensure that secondaries have caught up for workload teardown (SERVER-18878)
+                cluster.awaitReplication();
             });
         } finally {
             cluster.teardown();

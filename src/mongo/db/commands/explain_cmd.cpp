@@ -28,13 +28,6 @@
 
 #include "mongo/platform/basic.h"
 
-#include "mongo/db/commands/explain_cmd.h"
-
-#include <boost/optional.hpp>
-
-#include "mongo/client/dbclientinterface.h"
-#include "mongo/db/catalog/database.h"
-#include "mongo/db/client.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/query/explain.h"
 #include "mongo/db/repl/replication_coordinator_global.h"
@@ -43,13 +36,65 @@
 
 namespace mongo {
 
-    using std::string;
+using std::string;
 
-    static CmdExplain cmdExplain;
+namespace {
 
-    Status CmdExplain::checkAuthForCommand(ClientBasic* client,
-                                           const std::string& dbname,
-                                           const BSONObj& cmdObj) {
+/**
+ * The explain command is used to generate explain output for any read or write operation which has
+ * a query component (e.g. find, count, update, remove, distinct, etc.).
+ *
+ * The explain command takes as its argument a nested object which specifies the command to
+ * explain, and a verbosity indicator. For example:
+ *
+ *    {explain: {count: "coll", query: {foo: "bar"}}, verbosity: "executionStats"}
+ *
+ * This command like a dispatcher: it just retrieves a pointer to the nested command and invokes
+ * its explain() implementation.
+ */
+class CmdExplain : public Command {
+public:
+    CmdExplain() : Command("explain") {}
+
+    virtual bool isWriteCommandForConfigServer() const {
+        return false;
+    }
+
+    /**
+     * Running an explain on a secondary requires explicitly setting slaveOk.
+     */
+    virtual bool slaveOk() const {
+        return false;
+    }
+
+    virtual bool slaveOverrideOk() const {
+        return true;
+    }
+
+    virtual bool maintenanceOk() const {
+        return false;
+    }
+
+    virtual bool adminOnly() const {
+        return false;
+    }
+
+    bool supportsReadConcern() const final {
+        return true;
+    }
+
+    virtual void help(std::stringstream& help) const {
+        help << "explain database reads and writes";
+    }
+
+    /**
+     * You are authorized to run an explain if you are authorized to run
+     * the command that you are explaining. The auth check is performed recursively
+     * on the nested command.
+     */
+    virtual Status checkAuthForCommand(ClientBasic* client,
+                                       const std::string& dbname,
+                                       const BSONObj& cmdObj) {
         if (Object != cmdObj.firstElement().type()) {
             return Status(ErrorCodes::BadValue, "explain command requires a nested object");
         }
@@ -66,12 +111,12 @@ namespace mongo {
         return commToExplain->checkAuthForCommand(client, dbname, explainObj);
     }
 
-    bool CmdExplain::run(OperationContext* txn,
-                         const string& dbname,
-                         BSONObj& cmdObj, int options,
-                         string& errmsg,
-                         BSONObjBuilder& result) {
-
+    virtual bool run(OperationContext* txn,
+                     const std::string& dbname,
+                     BSONObj& cmdObj,
+                     int options,
+                     std::string& errmsg,
+                     BSONObjBuilder& result) {
         ExplainCommon::Verbosity verbosity;
         Status parseStatus = ExplainCommon::parseCmdBSON(cmdObj, &verbosity);
         if (!parseStatus.isOK()) {
@@ -101,10 +146,8 @@ namespace mongo {
              rpc::ServerSelectionMetadata::get(txn).getReadPreference() != boost::none);
         bool iAmStandalone = !txn->writesAreReplicated();
 
-        const bool canRunHere = iAmPrimary ||
-                                commandCanRunOnSecondary ||
-                                commandIsOverriddenToRunOnSecondary ||
-                                iAmStandalone;
+        const bool canRunHere = iAmPrimary || commandCanRunOnSecondary ||
+            commandIsOverriddenToRunOnSecondary || iAmStandalone;
 
         if (!canRunHere) {
             mongoutils::str::stream ss;
@@ -123,4 +166,7 @@ namespace mongo {
         return true;
     }
 
-} // namespace mongo
+} cmdExplain;
+
+}  // namespace
+}  // namespace mongo

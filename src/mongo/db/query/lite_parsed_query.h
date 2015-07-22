@@ -28,235 +28,327 @@
 
 #pragma once
 
-#include <algorithm>
 #include <boost/optional.hpp>
+#include <string>
 
-#include "mongo/client/dbclientinterface.h"
 #include "mongo/db/jsobj.h"
+#include "mongo/db/namespace_string.h"
 
 namespace mongo {
 
-    class QueryMessage;
+class QueryMessage;
+class Status;
+template <typename T>
+class StatusWith;
+
+/**
+ * Parses the QueryMessage or find command received from the user and makes the various fields
+ * more easily accessible.
+ */
+class LiteParsedQuery {
+public:
+    static const char kFindCommandName[];
 
     /**
-     * Parses the QueryMessage received from the user and makes the various fields more easily
-     * accessible.
+     * Parses a find command object, 'cmdObj'. Caller must indicate whether or not this lite
+     * parsed query is an explained query or not via 'isExplain'.
+     *
+     * Returns a heap allocated LiteParsedQuery on success or an error if 'cmdObj' is not well
+     * formed.
      */
-    class LiteParsedQuery {
-    public:
-        /**
-         * Parses a find command object, 'cmdObj'. Caller must indicate whether or not
-         * this lite parsed query is an explained query or not via 'isExplain'.
-         *
-         * On success, fills in the out-parameter 'parsedQuery' and returns an OK status.
-         * The caller takes ownership of *out.
-         *
-         * Returns a failure status if 'cmdObj' is not well formed. On failure the caller
-         * is not responsible for deleting *out.
-         */
-        static Status make(const std::string& fullns,
-                           const BSONObj& cmdObj,
-                           bool isExplain,
-                           LiteParsedQuery** out);
+    static StatusWith<std::unique_ptr<LiteParsedQuery>> makeFromFindCommand(NamespaceString nss,
+                                                                            const BSONObj& cmdObj,
+                                                                            bool isExplain);
 
-        /**
-         * Helper functions to parse maxTimeMS from a command object.  Returns the contained value,
-         * or an error on parsing fail.  When passed an EOO-type element, returns 0 (special value
-         * for "allow to run indefinitely").
-         */
-        static StatusWith<int> parseMaxTimeMSCommand(const BSONObj& cmdObj);
+    /**
+     * Constructs a LiteParseQuery object as though it is from a legacy QueryMessage.
+     */
+    static StatusWith<std::unique_ptr<LiteParsedQuery>> makeAsOpQuery(NamespaceString nss,
+                                                                      int ntoskip,
+                                                                      int ntoreturn,
+                                                                      int queryoptions,
+                                                                      const BSONObj& query,
+                                                                      const BSONObj& proj,
+                                                                      const BSONObj& sort,
+                                                                      const BSONObj& hint,
+                                                                      const BSONObj& minObj,
+                                                                      const BSONObj& maxObj,
+                                                                      bool snapshot,
+                                                                      bool explain);
 
-        /**
-         * Same as parseMaxTimeMSCommand, but for a query object.
-         */
-        static StatusWith<int> parseMaxTimeMSQuery(const BSONObj& queryObj);
+    /**
+     * Constructs a LiteParseQuery object that can be used to serialize to find command
+     * BSON object.
+     */
+    static StatusWith<std::unique_ptr<LiteParsedQuery>> makeAsFindCmd(
+        NamespaceString nss,
+        const BSONObj& query,
+        const BSONObj& sort,
+        boost::optional<long long> limit);
 
-        /**
-         * Helper function to identify text search sort key
-         * Example: {a: {$meta: "textScore"}}
-         */
-        static bool isTextScoreMeta(BSONElement elt);
+    /**
+     * Converts this LPQ into a find command.
+     */
+    BSONObj asFindCommand() const;
 
-        /**
-         * Helper function to identify recordId projection.
-         *
-         * Example: {a: {$meta: "recordId"}}.
-         */
-        static bool isRecordIdMeta(BSONElement elt);
+    /**
+     * Helper functions to parse maxTimeMS from a command object.  Returns the contained value,
+     * or an error on parsing fail.  When passed an EOO-type element, returns 0 (special value
+     * for "allow to run indefinitely").
+     */
+    static StatusWith<int> parseMaxTimeMSCommand(const BSONObj& cmdObj);
 
-        /**
-         * Helper function to validate a sort object.
-         * Returns true if each element satisfies one of:
-         * 1. a number with value 1
-         * 2. a number with value -1
-         * 3. isTextScoreMeta
-         */
-        static bool isValidSortOrder(const BSONObj& sortObj);
+    /**
+     * Same as parseMaxTimeMSCommand, but for a query object.
+     */
+    static StatusWith<int> parseMaxTimeMSQuery(const BSONObj& queryObj);
 
-        /**
-         * Returns true if the query described by "query" should execute
-         * at an elevated level of isolation (i.e., $isolated was specified).
-         */
-        static bool isQueryIsolated(const BSONObj& query);
+    /**
+     * Helper function to identify text search sort key
+     * Example: {a: {$meta: "textScore"}}
+     */
+    static bool isTextScoreMeta(BSONElement elt);
 
-        // Names of the maxTimeMS command and query option.
-        static const std::string cmdOptionMaxTimeMS;
-        static const std::string queryOptionMaxTimeMS;
+    /**
+     * Helper function to identify recordId projection.
+     *
+     * Example: {a: {$meta: "recordId"}}.
+     */
+    static bool isRecordIdMeta(BSONElement elt);
 
-        // Names of the $meta projection values.
-        static const std::string metaTextScore;
-        static const std::string metaGeoNearDistance;
-        static const std::string metaGeoNearPoint;
-        static const std::string metaRecordId;
-        static const std::string metaIndexKey;
+    /**
+     * Helper function to validate a sort object.
+     * Returns true if each element satisfies one of:
+     * 1. a number with value 1
+     * 2. a number with value -1
+     * 3. isTextScoreMeta
+     */
+    static bool isValidSortOrder(const BSONObj& sortObj);
 
-        const std::string& ns() const { return _ns; }
-        bool isLocalDB() const { return _ns.compare(0, 6, "local.") == 0; }
+    /**
+     * Returns true if the query described by "query" should execute
+     * at an elevated level of isolation (i.e., $isolated was specified).
+     */
+    static bool isQueryIsolated(const BSONObj& query);
 
-        const BSONObj& getFilter() const { return _filter; }
-        const BSONObj& getProj() const { return _proj; }
-        const BSONObj& getSort() const { return _sort; }
-        const BSONObj& getHint() const { return _hint; }
+    // Name of the find command parameter used to pass read preference.
+    static const char* kFindCommandReadPrefField;
 
-        static const int kDefaultBatchSize;
+    // Names of the maxTimeMS command and query option.
+    static const std::string cmdOptionMaxTimeMS;
+    static const std::string queryOptionMaxTimeMS;
 
-        int getSkip() const { return _skip; }
-        boost::optional<int> getLimit() const { return _limit; }
-        boost::optional<int> getBatchSize() const { return _batchSize; }
-        bool wantMore() const { return _wantMore; }
+    // Names of the $meta projection values.
+    static const std::string metaTextScore;
+    static const std::string metaGeoNearDistance;
+    static const std::string metaGeoNearPoint;
+    static const std::string metaRecordId;
+    static const std::string metaIndexKey;
 
-        bool fromFindCommand() const { return _fromCommand; }
-        bool isExplain() const { return _explain; }
+    const NamespaceString& nss() const {
+        return _nss;
+    }
+    const std::string& ns() const {
+        return _nss.ns();
+    }
 
-        const std::string& getComment() const { return _comment; }
+    const BSONObj& getFilter() const {
+        return _filter;
+    }
+    const BSONObj& getProj() const {
+        return _proj;
+    }
+    const BSONObj& getSort() const {
+        return _sort;
+    }
+    const BSONObj& getHint() const {
+        return _hint;
+    }
 
-        int getMaxScan() const { return _maxScan; }
-        int getMaxTimeMS() const { return _maxTimeMS; }
+    static const long long kDefaultBatchSize;
 
-        const BSONObj& getMin() const { return _min; }
-        const BSONObj& getMax() const { return _max; }
+    long long getSkip() const {
+        return _skip;
+    }
+    boost::optional<long long> getLimit() const {
+        return _limit;
+    }
+    boost::optional<long long> getBatchSize() const {
+        return _batchSize;
+    }
+    bool wantMore() const {
+        return _wantMore;
+    }
 
-        bool returnKey() const { return _returnKey; }
-        bool showRecordId() const { return _showRecordId; }
-        bool isSnapshot() const { return _snapshot; }
-        bool hasReadPref() const { return _hasReadPref; }
+    bool isFromFindCommand() const {
+        return _fromCommand;
+    }
+    bool isExplain() const {
+        return _explain;
+    }
 
-        bool isTailable() const { return _tailable; }
-        bool isSlaveOk() const { return _slaveOk; }
-        bool isOplogReplay() const { return _oplogReplay; }
-        bool isNoCursorTimeout() const { return _noCursorTimeout; }
-        bool isAwaitData() const { return _awaitData; }
-        bool isExhaust() const { return _exhaust; }
-        bool isPartial() const { return _partial; }
+    const std::string& getComment() const {
+        return _comment;
+    }
 
-        /**
-         * Return options as a bit vector.
-         */
-        int getOptions() const;
+    int getMaxScan() const {
+        return _maxScan;
+    }
+    int getMaxTimeMS() const {
+        return _maxTimeMS;
+    }
 
-        //
-        // Old parsing code: SOON TO BE DEPRECATED.
-        //
+    const BSONObj& getMin() const {
+        return _min;
+    }
+    const BSONObj& getMax() const {
+        return _max;
+    }
 
-        /**
-         * Parse the provided QueryMessage and set *out to point to the output.
-         *
-         * Return Status::OK() if parsing succeeded.  Caller owns *out.
-         * Otherwise, *out is invalid and the returned Status indicates why parsing failed.
-         */
-        static Status make(const QueryMessage& qm, LiteParsedQuery** out);
+    bool returnKey() const {
+        return _returnKey;
+    }
+    bool showRecordId() const {
+        return _showRecordId;
+    }
+    bool isSnapshot() const {
+        return _snapshot;
+    }
+    bool hasReadPref() const {
+        return _hasReadPref;
+    }
 
-        /**
-         * Fills out a LiteParsedQuery.  Used for debugging and testing, when we don't have a
-         * QueryMessage.
-         */
-        static Status make(const std::string& ns,
-                           int ntoskip,
-                           int ntoreturn,
-                           int queryoptions,
-                           const BSONObj& query,
-                           const BSONObj& proj,
-                           const BSONObj& sort,
-                           const BSONObj& hint,
-                           const BSONObj& minObj,
-                           const BSONObj& maxObj,
-                           bool snapshot,
-                           bool explain,
-                           LiteParsedQuery** out);
+    bool isTailable() const {
+        return _tailable;
+    }
+    bool isSlaveOk() const {
+        return _slaveOk;
+    }
+    bool isOplogReplay() const {
+        return _oplogReplay;
+    }
+    bool isNoCursorTimeout() const {
+        return _noCursorTimeout;
+    }
+    bool isAwaitData() const {
+        return _awaitData;
+    }
+    bool isExhaust() const {
+        return _exhaust;
+    }
+    bool isPartial() const {
+        return _partial;
+    }
 
-    private:
-        LiteParsedQuery() = default;
+    boost::optional<long long> getReplicationTerm() const {
+        return _replicationTerm;
+    }
 
-        /**
-         * Parsing code calls this after construction of the LPQ is complete. There are additional
-         * semantic properties that must be checked even if "lexically" the parse is OK.
-         */
-        Status validate() const;
+    /**
+     * Return options as a bit vector.
+     */
+    int getOptions() const;
 
-        Status init(const std::string& ns, int ntoskip, int ntoreturn, int queryOptions,
-                    const BSONObj& queryObj, const BSONObj& proj, bool fromQueryMessage);
+    //
+    // Old parsing code: SOON TO BE DEPRECATED.
+    //
 
-        Status initFullQuery(const BSONObj& top);
+    /**
+     * Parse the provided QueryMessage and return a heap constructed LiteParsedQuery, which
+     * represents it or an error.
+     */
+    static StatusWith<std::unique_ptr<LiteParsedQuery>> fromLegacyQueryMessage(
+        const QueryMessage& qm);
 
-        static StatusWith<int> parseMaxTimeMS(const BSONElement& maxTimeMSElt);
+private:
+    LiteParsedQuery(NamespaceString nss);
 
-        /**
-         * Updates the projection object with a $meta projection for the returnKey option.
-         */
-        void addReturnKeyMetaProj();
+    /**
+     * Parsing code calls this after construction of the LPQ is complete. There are additional
+     * semantic properties that must be checked even if "lexically" the parse is OK.
+     */
+    Status validate() const;
 
-        /**
-         * Updates the projection object with a $meta projection for the showRecordId option.
-         */
-        void addShowRecordIdMetaProj();
+    Status init(int ntoskip,
+                int ntoreturn,
+                int queryOptions,
+                const BSONObj& queryObj,
+                const BSONObj& proj,
+                bool fromQueryMessage);
 
-        /**
-         * Initializes options based on the value of the 'options' bit vector.
-         *
-         * This contains flags such as tailable, exhaust, and noCursorTimeout.
-         */
-        void initFromInt(int options);
+    Status initFullQuery(const BSONObj& top);
 
-        std::string _ns;
+    static StatusWith<int> parseMaxTimeMS(const BSONElement& maxTimeMSElt);
 
-        BSONObj _filter;
-        BSONObj _proj;
-        BSONObj _sort;
-        // The hint provided, if any.  If the hint was by index key pattern, the value of '_hint' is
-        // the key pattern hinted.  If the hint was by index name, the value of '_hint' is
-        // {$hint: <String>}, where <String> is the index name hinted.
-        BSONObj _hint;
+    /**
+     * Updates the projection object with a $meta projection for the returnKey option.
+     */
+    void addReturnKeyMetaProj();
 
-        int _skip = 0;
-        bool _wantMore = true;
+    /**
+     * Updates the projection object with a $meta projection for the showRecordId option.
+     */
+    void addShowRecordIdMetaProj();
 
-        boost::optional<int> _limit;
-        boost::optional<int> _batchSize;
+    /**
+     * Initializes options based on the value of the 'options' bit vector.
+     *
+     * This contains flags such as tailable, exhaust, and noCursorTimeout.
+     */
+    void initFromInt(int options);
 
-        bool _fromCommand = false;
-        bool _explain = false;
+    /**
+     * Add the meta projection to this object if needed.
+     */
+    void addMetaProjection();
 
-        std::string _comment;
+    /**
+     * Returns OK if this is valid in the find command context.
+     */
+    Status validateFindCmd();
 
-        int _maxScan = 0;
-        int _maxTimeMS = 0;
+    const NamespaceString _nss;
 
-        BSONObj _min;
-        BSONObj _max;
+    BSONObj _filter;
+    BSONObj _proj;
+    BSONObj _sort;
+    // The hint provided, if any.  If the hint was by index key pattern, the value of '_hint' is
+    // the key pattern hinted.  If the hint was by index name, the value of '_hint' is
+    // {$hint: <String>}, where <String> is the index name hinted.
+    BSONObj _hint;
 
-        bool _returnKey = false;
-        bool _showRecordId = false;
-        bool _snapshot = false;
-        bool _hasReadPref = false;
+    long long _skip = 0;
+    bool _wantMore = true;
 
-        // Options that can be specified in the OP_QUERY 'flags' header.
-        bool _tailable = false;
-        bool _slaveOk = false;
-        bool _oplogReplay = false;
-        bool _noCursorTimeout = false;
-        bool _awaitData = false;
-        bool _exhaust = false;
-        bool _partial = false;
-    };
+    boost::optional<long long> _limit;
+    boost::optional<long long> _batchSize;
 
-} // namespace mongo
+    bool _fromCommand = false;
+    bool _explain = false;
+
+    std::string _comment;
+
+    int _maxScan = 0;
+    int _maxTimeMS = 0;
+
+    BSONObj _min;
+    BSONObj _max;
+
+    bool _returnKey = false;
+    bool _showRecordId = false;
+    bool _snapshot = false;
+    bool _hasReadPref = false;
+
+    // Options that can be specified in the OP_QUERY 'flags' header.
+    bool _tailable = false;
+    bool _slaveOk = false;
+    bool _oplogReplay = false;
+    bool _noCursorTimeout = false;
+    bool _awaitData = false;
+    bool _exhaust = false;
+    bool _partial = false;
+
+    boost::optional<long long> _replicationTerm;
+};
+
+}  // namespace mongo

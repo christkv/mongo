@@ -35,55 +35,49 @@
 
 namespace mongo {
 
-    /**
-     * A DBClientMultiCommand uses the client driver (DBClientConnections) to send and recv
-     * commands to different hosts in parallel.
-     *
-     * See MultiCommandDispatch for more details.
-     */
-    class DBClientMultiCommand : public MultiCommandDispatch {
-    public:
+class ShardConnection;
 
-        DBClientMultiCommand() : _timeoutMillis( 0 ) {}
+/**
+ * A DBClientMultiCommand uses the client driver (DBClientConnections) to send and recv
+ * commands to different hosts in parallel.
+ *
+ * See MultiCommandDispatch for more details.
+ */
+class DBClientMultiCommand : public MultiCommandDispatch {
+public:
+    DBClientMultiCommand();
+    ~DBClientMultiCommand();
 
-        ~DBClientMultiCommand();
+    void addCommand(const ConnectionString& endpoint,
+                    StringData dbName,
+                    const BSONObj& request) override;
 
-        void addCommand( const ConnectionString& endpoint,
-                         StringData dbName,
-                         const BSONSerializable& request );
+    void sendAll() override;
 
-        void sendAll();
+    int numPending() const override;
 
-        int numPending() const;
+    Status recvAny(ConnectionString* endpoint, BSONSerializable* response) override;
 
-        Status recvAny( ConnectionString* endpoint, BSONSerializable* response );
+private:
+    // All info associated with an pre- or in-flight command
+    struct PendingCommand {
+        PendingCommand(const ConnectionString& endpoint, StringData dbName, const BSONObj& cmdObj);
+        ~PendingCommand();
 
-        void setTimeoutMillis( int milliSecs );
+        // What to send
+        const ConnectionString endpoint;
+        const std::string dbName;
+        const BSONObj cmdObj;
 
-    private:
+        // Where to send it
+        std::unique_ptr<ShardConnection> conn;
 
-        // All info associated with an pre- or in-flight command
-        struct PendingCommand {
-
-            PendingCommand( const ConnectionString& endpoint,
-                            StringData dbName,
-                            const BSONObj& cmdObj );
-
-            // What to send
-            const ConnectionString endpoint;
-            const std::string dbName;
-            const BSONObj cmdObj;
-
-            // Where to send it
-            DBClientBase* conn;
-
-            // If anything goes wrong
-            Status status;
-        };
-
-        typedef std::deque<PendingCommand*> PendingQueue;
-        PendingQueue _pendingCommands;
-        int _timeoutMillis;
+        // If anything goes wrong
+        Status status;
     };
 
-}
+    typedef std::deque<PendingCommand*> PendingQueue;
+    PendingQueue _pendingCommands;
+};
+
+}  // namespace mongo

@@ -34,6 +34,9 @@
 // Define if building a debug build
 @mongo_config_debug_build@
 
+// Defined if thread_local storage class is available
+@mongo_config_have_thread_local@
+
 // Defined if __declspec(thread) is available
 @mongo_config_have___declspec_thread@
 
@@ -63,7 +66,3 @@
 
 // Defined if SSL support is enabled
 @mongo_config_ssl@
-
-// Defined if gdbserver support is enabled
-@mongo_config_use_gdbserver@
-

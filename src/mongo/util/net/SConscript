@@ -36,13 +36,23 @@ env.Library(
         "ssl_options.cpp",
     ],
     LIBDEPS=[
-        '$BUILD_DIR/mongo/util/background_job',
-        '$BUILD_DIR/mongo/util/fail_point',
         '$BUILD_DIR/mongo/db/server_options_core',
+        '$BUILD_DIR/mongo/util/background_job',
         '$BUILD_DIR/mongo/util/concurrency/ticketholder',
+        '$BUILD_DIR/mongo/util/fail_point',
         '$BUILD_DIR/mongo/util/foundation',
         '$BUILD_DIR/mongo/util/options_parser/options_parser',
         'hostandport',
+    ],
+)
+
+env.Library(
+    target='message_port_mock',
+    source=[
+        "message_port_mock.cpp",
+    ],
+    LIBDEPS=[
+        'network',
     ],
 )
 
@@ -63,6 +73,7 @@ env.Library(
         "message_server_port.cpp",
     ],
     LIBDEPS=[
+        'network',
         '$BUILD_DIR/mongo/db/stats/counters',
     ],
 )
@@ -73,5 +84,6 @@ env.Library(
         'miniwebserver.cpp',
     ],
     LIBDEPS=[
+        'network',
     ],
 )

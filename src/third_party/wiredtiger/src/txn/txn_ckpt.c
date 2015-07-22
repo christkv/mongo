@@ -349,17 +349,19 @@ __wt_txn_checkpoint(WT_SESSION_IMPL *session, const char *cfg[])
 	WT_TXN *txn;
 	WT_TXN_GLOBAL *txn_global;
 	WT_TXN_ISOLATION saved_isolation;
+	WT_TXN_STATE *txn_state;
+	void *saved_meta_next;
+	u_int i;
+	int full, fullckpt_logging, idle, tracking;
 	const char *txn_cfg[] = { WT_CONFIG_BASE(session,
 	    WT_SESSION_begin_transaction), "isolation=snapshot", NULL };
-	void *saved_meta_next;
-	int full, idle, logging, tracking;
-	u_int i;
 
 	conn = S2C(session);
-	txn_global = &conn->txn_global;
-	saved_isolation = session->isolation;
 	txn = &session->txn;
-	full = idle = logging = tracking = 0;
+	txn_global = &conn->txn_global;
+	txn_state = WT_SESSION_TXN_STATE(session);
+	saved_isolation = session->isolation;
+	full = fullckpt_logging = idle = tracking = 0;
 
 	/* Ensure the metadata table is open before taking any locks. */
 	WT_RET(__wt_metadata_open(session));
@@ -369,6 +371,10 @@ __wt_txn_checkpoint(WT_SESSION_IMPL *session, const char *cfg[])
 	 * kind of checkpoint this is.
 	 */
 	WT_RET(__checkpoint_apply_all(session, cfg, NULL, &full));
+
+	/* Configure logging only if doing a full checkpoint. */
+	fullckpt_logging =
+	    full && FLD_ISSET(conn->log_flags, WT_CONN_LOG_ENABLED);
 
 	/*
 	 * Get a list of handles we want to flush; this may pull closed objects
@@ -418,12 +424,28 @@ __wt_txn_checkpoint(WT_SESSION_IMPL *session, const char *cfg[])
 	tracking = 1;
 
 	/* Tell logging that we are about to start a database checkpoint. */
-	if (FLD_ISSET(conn->log_flags, WT_CONN_LOG_ENABLED) && full)
+	if (fullckpt_logging)
 		WT_ERR(__wt_txn_checkpoint_log(
 		    session, full, WT_TXN_LOG_CKPT_PREPARE, NULL));
 
 	WT_ERR(__checkpoint_verbose_track(session,
 	    "starting transaction", &verb_timer));
+
+	if (full)
+		WT_ERR(__wt_epoch(session, &start));
+
+	/*
+	 * Bump the global checkpoint generation, used to figure out whether
+	 * checkpoint has visited a tree.  There is no need for this to be
+	 * atomic: it is only written while holding the checkpoint lock.
+	 *
+	 * We do need to update it before clearing the checkpoint's entry out
+	 * of the transaction table, or a thread evicting in a tree could
+	 * ignore the checkpoint's transaction.
+	 */
+	++txn_global->checkpoint_gen;
+	WT_STAT_FAST_CONN_SET(session,
+	    txn_checkpoint_generation, txn_global->checkpoint_gen);
 
 	/*
 	 * Start a snapshot transaction for the checkpoint.
@@ -432,34 +454,49 @@ __wt_txn_checkpoint(WT_SESSION_IMPL *session, const char *cfg[])
 	 * side effects on cursors, which applications can hold open across
 	 * calls to checkpoint.
 	 */
-	if (full)
-		WT_ERR(__wt_epoch(session, &start));
 	WT_ERR(__wt_txn_begin(session, txn_cfg));
 
 	/* Ensure a transaction ID is allocated prior to sharing it globally */
 	WT_ERR(__wt_txn_id_check(session));
-	/*
-	 * Save a copy of the checkpoint transaction ID so that refresh can
-	 * skip the checkpoint IDs. Save a copy of the snap min so that
-	 * visibility checks for the checkpoint use the right ID.
-	 */
-	txn_global->checkpoint_id = session->txn.id;
-	txn_global->checkpoint_snap_min = session->txn.snap_min;
 
 	/*
-	 * No need for this to be atomic it is only written while holding the
-	 * checkpoint lock.
+	 * Save the checkpoint session ID.  We never do checkpoints in the
+	 * default session (with id zero).
 	 */
-	txn_global->checkpoint_gen += 1;
-	WT_STAT_FAST_CONN_SET(session,
-	    txn_checkpoint_generation, txn_global->checkpoint_gen);
+	WT_ASSERT(session, session->id != 0 && txn_global->checkpoint_id == 0);
+	txn_global->checkpoint_id = session->id;
+
+	txn_global->checkpoint_pinned =
+	    WT_MIN(txn_state->id, txn_state->snap_min);
+
+	/*
+	 * We're about to clear the checkpoint transaction from the global
+	 * state table so the oldest ID can move forward.  Make sure everything
+	 * we've done above is scheduled.
+	 */
+	WT_FULL_BARRIER();
+
+	/*
+	 * Sanity check that the oldest ID hasn't moved on before we have
+	 * cleared our entry.
+	 */
+	WT_ASSERT(session,
+	    WT_TXNID_LE(txn_global->oldest_id, txn_state->id) &&
+	    WT_TXNID_LE(txn_global->oldest_id, txn_state->snap_min));
+
+	/*
+	 * Clear our entry from the global transaction session table. Any
+	 * operation that needs to know about the ID for this checkpoint will
+	 * consider the checkpoint ID in the global structure. Most operations
+	 * can safely ignore the checkpoint ID (see the visible all check for
+	 * details).
+	 */
+	txn_state->id = txn_state->snap_min = WT_TXN_NONE;
 
 	/* Tell logging that we have started a database checkpoint. */
-	if (FLD_ISSET(conn->log_flags, WT_CONN_LOG_ENABLED) && full) {
+	if (fullckpt_logging)
 		WT_ERR(__wt_txn_checkpoint_log(
 		    session, full, WT_TXN_LOG_CKPT_START, NULL));
-		logging = 1;
-	}
 
 	WT_ERR(__checkpoint_apply(session, cfg, __wt_checkpoint));
 
@@ -472,10 +509,6 @@ __wt_txn_checkpoint(WT_SESSION_IMPL *session, const char *cfg[])
 
 	/* Release the snapshot so we aren't pinning pages in cache. */
 	__wt_txn_release_snapshot(session);
-
-	/* Clear the global checkpoint transaction IDs */
-	txn_global->checkpoint_id = WT_TXN_NONE;
-	txn_global->checkpoint_snap_min = WT_TXN_NONE;
 
 	WT_ERR(__checkpoint_verbose_track(session,
 	    "committing transaction", &verb_timer));
@@ -553,16 +586,12 @@ err:	/*
 		WT_TRET(__wt_txn_rollback(session, NULL));
 	}
 
-	/* Ensure the checkpoint IDs are cleared on the error path. */
-	txn_global->checkpoint_id = WT_TXN_NONE;
-	txn_global->checkpoint_snap_min = WT_TXN_NONE;
-
 	/*
 	 * Tell logging that we have finished a database checkpoint.  Do not
 	 * write a log record if the database was idle.
 	 */
-	if (logging) {
-		if (ret == 0 && full &&
+	if (fullckpt_logging) {
+		if (ret == 0 &&
 		    F_ISSET((WT_BTREE *)session->meta_dhandle->handle,
 		    WT_BTREE_SKIP_CKPT))
 			idle = 1;
@@ -808,10 +837,8 @@ __checkpoint_worker(
 			force = 1;
 	}
 	if (!btree->modified && !force) {
-		if (!is_checkpoint) {
-			F_SET(btree, WT_BTREE_SKIP_CKPT);
-			goto done;
-		}
+		if (!is_checkpoint)
+			goto nockpt;
 
 		deleted = 0;
 		WT_CKPT_FOREACH(ckptbase, ckpt)
@@ -830,7 +857,12 @@ __checkpoint_worker(
 		    (WT_PREFIX_MATCH(name, WT_CHECKPOINT) &&
 		    WT_PREFIX_MATCH((ckpt - 1)->name, WT_CHECKPOINT))) &&
 		    deleted < 2) {
-			F_SET(btree, WT_BTREE_SKIP_CKPT);
+nockpt:			F_SET(btree, WT_BTREE_SKIP_CKPT);
+			WT_PUBLISH(btree->checkpoint_gen,
+			    S2C(session)->txn_global.checkpoint_gen);
+			WT_STAT_FAST_DATA_SET(session,
+			    btree_checkpoint_generation,
+			    btree->checkpoint_gen);
 			goto done;
 		}
 	}
@@ -848,7 +880,7 @@ __checkpoint_worker(
 	 * Hold the lock until we're done (blocking hot backups from starting),
 	 * we don't want to race with a future hot backup.
 	 */
-	__wt_spin_lock(session, &conn->hot_backup_lock);
+	WT_ERR(__wt_readlock(session, conn->hot_backup_lock));
 	hot_backup_locked = 1;
 	if (conn->hot_backup)
 		WT_CKPT_FOREACH(ckptbase, ckpt) {
@@ -1058,16 +1090,8 @@ fake:	/*
 		WT_ERR(__wt_txn_checkpoint_log(
 		    session, 0, WT_TXN_LOG_CKPT_STOP, NULL));
 
-	/*
-	 * Update the checkpoint generation for this handle so visible
-	 * updates newer than the checkpoint can be evicted.
-	 */
-done:	btree->checkpoint_gen = conn->txn_global.checkpoint_gen;
-	WT_STAT_FAST_DATA_SET(session,
-	    btree_checkpoint_generation, btree->checkpoint_gen);
-
-err:
-	/*
+done:
+err:	/*
 	 * If the checkpoint didn't complete successfully, make sure the
 	 * tree is marked dirty.
 	 */
@@ -1075,7 +1099,7 @@ err:
 		btree->modified = 1;
 
 	if (hot_backup_locked)
-		__wt_spin_unlock(session, &conn->hot_backup_lock);
+		WT_TRET(__wt_readunlock(session, conn->hot_backup_lock));
 
 	__wt_meta_ckptlist_free(session, ckptbase);
 	__wt_free(session, name_alloc);
